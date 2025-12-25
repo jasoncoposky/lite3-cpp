@@ -55,90 +55,283 @@ namespace lite3cpp {
     }
 
     void Buffer::set_null(size_t ofs, std::string_view key) {
-        uint32_t hash = utils::djb2_hash(key);
-        (void)set_impl(ofs, key, hash, 0, nullptr, Type::Null);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            (void)set_impl(ofs, key, hash, 0, nullptr, Type::Null);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("set_null", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_null", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "set_null", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_null", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "set_null", std::chrono::microseconds(0), ofs, key);
+            throw;
+        }
     }
 
     void Buffer::set_bool(size_t ofs, std::string_view key, bool value) {
-        uint32_t hash = utils::djb2_hash(key);
-        (void)set_impl(ofs, key, hash, sizeof(value), &value, Type::Bool);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            (void)set_impl(ofs, key, hash, sizeof(value), &value, Type::Bool);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("set_bool", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_bool", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "set_bool", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_bool", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "set_bool", std::chrono::microseconds(0), ofs, key);
+            throw;
+        }
     }
 
     void Buffer::set_i64(size_t ofs, std::string_view key, int64_t value) {
-        uint32_t hash = utils::djb2_hash(key);
-        (void)set_impl(ofs, key, hash, sizeof(value), &value, Type::Int64);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            (void)set_impl(ofs, key, hash, sizeof(value), &value, Type::Int64);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("set_i64", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_i64", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "set_i64", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_i64", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "set_i64", std::chrono::microseconds(0), ofs, key);
+            throw;
+        }
     }
 
     void Buffer::set_f64(size_t ofs, std::string_view key, double value) {
-        uint32_t hash = utils::djb2_hash(key);
-        (void)set_impl(ofs, key, hash, sizeof(value), &value, Type::Float64);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            (void)set_impl(ofs, key, hash, sizeof(value), &value, Type::Float64);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("set_f64", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_f64", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "set_f64", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_f64", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "set_f64", std::chrono::microseconds(0), ofs, key);
+            throw;
+        }
     }
 
     void Buffer::set_str(size_t ofs, std::string_view key, std::string_view value) {
-        lite3cpp::log_if_enabled(lite3cpp::LogLevel::Debug, "set_str called.", "SetString", std::chrono::microseconds(0), ofs, key);
-        uint32_t hash = utils::djb2_hash(key);
-        (void)set_impl(ofs, key, hash, value.size(), value.data(), Type::String);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            (void)set_impl(ofs, key, hash, value.size(), value.data(), Type::String);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("set_str", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_str", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "set_str", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_str", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "set_str", std::chrono::microseconds(0), ofs, key);
+            throw;
+        }
     }
 
     void Buffer::set_bytes(size_t ofs, std::string_view key, std::span<const std::byte> value) {
-        uint32_t hash = utils::djb2_hash(key);
-        (void)set_impl(ofs, key, hash, value.size(), value.data(), Type::Bytes);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            (void)set_impl(ofs, key, hash, value.size(), value.data(), Type::Bytes);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("set_bytes", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_bytes", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "set_bytes", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_bytes", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "set_bytes", std::chrono::microseconds(0), ofs, key);
+            throw;
+        }
     }
 
     size_t Buffer::set_obj(size_t ofs, std::string_view key) {
-        uint32_t hash = utils::djb2_hash(key);
-        return set_impl(ofs, key, hash, 0, nullptr, Type::Object);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            auto result = set_impl(ofs, key, hash, 0, nullptr, Type::Object);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("set_obj", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_obj", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "set_obj", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+            return result;
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_obj", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "set_obj", std::chrono::microseconds(0), ofs, key);
+            throw;
+        }
     }
 
     size_t Buffer::set_arr(size_t ofs, std::string_view key) {
-        uint32_t hash = utils::djb2_hash(key);
-        return set_impl(ofs, key, hash, 0, nullptr, Type::Array);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            auto result = set_impl(ofs, key, hash, 0, nullptr, Type::Array);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("set_arr", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_arr", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "set_arr", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+            return result;
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("set_arr", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "set_arr", std::chrono::microseconds(0), ofs, key);
+            throw;
+        }
     }
 
     void Buffer::arr_append_null(size_t ofs) {
-        arr_append_impl(ofs, 0, nullptr, Type::Null);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            arr_append_impl(ofs, 0, nullptr, Type::Null);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("arr_append_null", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_null", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_append_null", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_null", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_append_null", std::chrono::microseconds(0), ofs);
+            throw;
+        }
     }
 
     void Buffer::arr_append_bool(size_t ofs, bool value) {
-        arr_append_impl(ofs, sizeof(value), &value, Type::Bool);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            arr_append_impl(ofs, sizeof(value), &value, Type::Bool);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("arr_append_bool", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_bool", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_append_bool", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_bool", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_append_bool", std::chrono::microseconds(0), ofs);
+            throw;
+        }
     }
 
     void Buffer::arr_append_i64(size_t ofs, int64_t value) {
-        arr_append_impl(ofs, sizeof(value), &value, Type::Int64);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            arr_append_impl(ofs, sizeof(value), &value, Type::Int64);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("arr_append_i64", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_i64", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_append_i64", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_i64", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_append_i64", std::chrono::microseconds(0), ofs);
+            throw;
+        }
     }
 
     void Buffer::arr_append_f64(size_t ofs, double value) {
-        arr_append_impl(ofs, sizeof(value), &value, Type::Float64);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            arr_append_impl(ofs, sizeof(value), &value, Type::Float64);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("arr_append_f64", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_f64", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_append_f64", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_f64", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_append_f64", std::chrono::microseconds(0), ofs);
+            throw;
+        }
     }
 
     void Buffer::arr_append_str(size_t ofs, std::string_view value) {
-        arr_append_impl(ofs, value.size(), value.data(), Type::String);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            arr_append_impl(ofs, value.size(), value.data(), Type::String);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("arr_append_str", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_str", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_append_str", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_str", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_append_str", std::chrono::microseconds(0), ofs);
+            throw;
+        }
     }
 
     void Buffer::arr_append_bytes(size_t ofs, std::span<const std::byte> value) {
-        arr_append_impl(ofs, value.size(), value.data(), Type::Bytes);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            arr_append_impl(ofs, value.size(), value.data(), Type::Bytes);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("arr_append_bytes", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_bytes", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_append_bytes", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_bytes", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_append_bytes", std::chrono::microseconds(0), ofs);
+            throw;
+        }
     }
 
     size_t Buffer::arr_append_obj(size_t ofs) {
-        Node current_node;
-        current_node.read(*this, ofs);
-        if (current_node.type != Type::Array) {
-            throw lite3cpp::exception("Error in buffer operation");
-            return 0;
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            Node current_node;
+            current_node.read(*this, ofs);
+            if (current_node.type != Type::Array) {
+                throw lite3cpp::exception("Error in buffer operation");
+            }
+            uint32_t index = current_node.size;
+            auto result = set_impl(ofs, {}, index, 0, nullptr, Type::Object);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("arr_append_obj", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_obj", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_append_obj", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+            return result;
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_obj", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_append_obj", std::chrono::microseconds(0), ofs);
+            throw;
         }
-        uint32_t index = current_node.size;
-        return set_impl(ofs, {}, index, 0, nullptr, Type::Object);
     }
 
     size_t Buffer::arr_append_arr(size_t ofs) {
-        Node current_node;
-        current_node.read(*this, ofs);
-        if (current_node.type != Type::Array) {
-            throw lite3cpp::exception("Error in buffer operation");
-            return 0;
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            Node current_node;
+            current_node.read(*this, ofs);
+            if (current_node.type != Type::Array) {
+                throw lite3cpp::exception("Error in buffer operation");
+            }
+            uint32_t index = current_node.size;
+            auto result = set_impl(ofs, {}, index, 0, nullptr, Type::Array);
+            auto end = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> diff = end - start;
+            g_metrics.load(std::memory_order_acquire)->record_latency("arr_append_arr", diff.count());
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_arr", "success");
+            log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_append_arr", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+            return result;
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_append_arr", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_append_arr", std::chrono::microseconds(0), ofs);
+            throw;
         }
-        uint32_t index = current_node.size;
-        return set_impl(ofs, {}, index, 0, nullptr, Type::Array);
     }
 
     void Buffer::arr_append_impl(size_t ofs, size_t val_len, const void* val_ptr, Type type) {
@@ -153,167 +346,330 @@ namespace lite3cpp {
     }
 
     bool Buffer::get_bool(size_t ofs, std::string_view key) const {
-        uint32_t hash = utils::djb2_hash(key);
-        Type type;
-        const std::byte* value_ptr = get_impl(ofs, key, hash, type);
-        if (value_ptr && type == Type::Bool) {
-            return *reinterpret_cast<const bool*>(value_ptr);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            Type type;
+            const std::byte* value_ptr = get_impl(ofs, key, hash, type);
+            if (value_ptr && type == Type::Bool) {
+                auto result = *reinterpret_cast<const bool*>(value_ptr);
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("get_bool", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_bool", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "get_bool", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+                return result;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_bool", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "get_bool", std::chrono::microseconds(0), ofs, key);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return false;
     }
 
     int64_t Buffer::get_i64(size_t ofs, std::string_view key) const {
-        uint32_t hash = utils::djb2_hash(key);
-        Type type;
-        const std::byte* value_ptr = get_impl(ofs, key, hash, type);
-        if (value_ptr && type == Type::Int64) {
-            int64_t value;
-            memcpy(&value, value_ptr, sizeof(value));
-            return value;
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            Type type;
+            const std::byte* value_ptr = get_impl(ofs, key, hash, type);
+            if (value_ptr && type == Type::Int64) {
+                int64_t value;
+                memcpy(&value, value_ptr, sizeof(value));
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("get_i64", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_i64", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "get_i64", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+                return value;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_i64", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "get_i64", std::chrono::microseconds(0), ofs, key);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return 0;
     }
 
     double Buffer::get_f64(size_t ofs, std::string_view key) const {
-        uint32_t hash = utils::djb2_hash(key);
-        Type type;
-        const std::byte* value_ptr = get_impl(ofs, key, hash, type);
-        if (value_ptr && type == Type::Float64) {
-            double value;
-            memcpy(&value, value_ptr, sizeof(value));
-            return value;
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            Type type;
+            const std::byte* value_ptr = get_impl(ofs, key, hash, type);
+            if (value_ptr && type == Type::Float64) {
+                double value;
+                memcpy(&value, value_ptr, sizeof(value));
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("get_f64", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_f64", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "get_f64", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+                return value;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_f64", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "get_f64", std::chrono::microseconds(0), ofs, key);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return 0.0;
     }
 
     std::string_view Buffer::get_str(size_t ofs, std::string_view key) const {
-        lite3cpp::log_if_enabled(lite3cpp::LogLevel::Debug, "get_str called.", "GetString", std::chrono::microseconds(0), ofs, key);
-        uint32_t hash = utils::djb2_hash(key);
-        Type type;
-        const std::byte* value_ptr = get_impl(ofs, key, hash, type);
-        if (value_ptr && type == Type::String) {
-            uint32_t size;
-            memcpy(&size, value_ptr, sizeof(size));
-            return std::string_view(reinterpret_cast<const char*>(value_ptr + sizeof(size)), size);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            Type type;
+            const std::byte* value_ptr = get_impl(ofs, key, hash, type);
+            if (value_ptr && type == Type::String) {
+                uint32_t size;
+                memcpy(&size, value_ptr, sizeof(size));
+                auto result = std::string_view(reinterpret_cast<const char*>(value_ptr + sizeof(size)), size);
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("get_str", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_str", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "get_str", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+                return result;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_str", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "get_str", std::chrono::microseconds(0), ofs, key);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return {};
     }
 
     std::span<const std::byte> Buffer::get_bytes(size_t ofs, std::string_view key) const {
-        uint32_t hash = utils::djb2_hash(key);
-        Type type;
-        const std::byte* value_ptr = get_impl(ofs, key, hash, type);
-        if (value_ptr && type == Type::Bytes) {
-            uint32_t size;
-            memcpy(&size, value_ptr, sizeof(size));
-            return std::span<const std::byte>(value_ptr + sizeof(size), size);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            Type type;
+            const std::byte* value_ptr = get_impl(ofs, key, hash, type);
+            if (value_ptr && type == Type::Bytes) {
+                uint32_t size;
+                memcpy(&size, value_ptr, sizeof(size));
+                auto result = std::span<const std::byte>(value_ptr + sizeof(size), size);
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("get_bytes", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_bytes", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "get_bytes", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+                return result;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_bytes", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "get_bytes", std::chrono::microseconds(0), ofs, key);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return {};
     }
 
     size_t Buffer::get_obj(size_t ofs, std::string_view key) const {
-        uint32_t hash = utils::djb2_hash(key);
-        Type type;
-        const std::byte* value_ptr = get_impl(ofs, key, hash, type);
-        if (value_ptr && type == Type::Object) {
-            return value_ptr - m_data.data() - 1;
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            Type type;
+            const std::byte* value_ptr = get_impl(ofs, key, hash, type);
+            if (value_ptr && type == Type::Object) {
+                auto result = value_ptr - m_data.data() - 1;
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("get_obj", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_obj", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "get_obj", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+                return result;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_obj", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "get_obj", std::chrono::microseconds(0), ofs, key);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return 0;
     }
 
     size_t Buffer::get_arr(size_t ofs, std::string_view key) const {
-        uint32_t hash = utils::djb2_hash(key);
-        Type type;
-        const std::byte* value_ptr = get_impl(ofs, key, hash, type);
-        if (value_ptr && type == Type::Array) {
-            return value_ptr - m_data.data() - 1;
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            uint32_t hash = utils::djb2_hash(key);
+            Type type;
+            const std::byte* value_ptr = get_impl(ofs, key, hash, type);
+            if (value_ptr && type == Type::Array) {
+                auto result = value_ptr - m_data.data() - 1;
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("get_arr", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_arr", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "get_arr", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs, key);
+                return result;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("get_arr", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "get_arr", std::chrono::microseconds(0), ofs, key);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return 0;
     }
 
     bool Buffer::arr_get_bool(size_t ofs, uint32_t index) const {
-        Type type;
-        const std::byte* value_ptr = arr_get_impl(ofs, index, type);
-        if (value_ptr && type == Type::Bool) {
-            return *reinterpret_cast<const bool*>(value_ptr);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            Type type;
+            const std::byte* value_ptr = arr_get_impl(ofs, index, type);
+            if (value_ptr && type == Type::Bool) {
+                auto result = *reinterpret_cast<const bool*>(value_ptr);
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("arr_get_bool", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_bool", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_get_bool", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+                return result;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_bool", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_get_bool", std::chrono::microseconds(0), ofs);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return false;
     }
 
     int64_t Buffer::arr_get_i64(size_t ofs, uint32_t index) const {
-        Type type;
-        const std::byte* value_ptr = arr_get_impl(ofs, index, type);
-        if (value_ptr && type == Type::Int64) {
-            int64_t value;
-            memcpy(&value, value_ptr, sizeof(value));
-            return value;
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            Type type;
+            const std::byte* value_ptr = arr_get_impl(ofs, index, type);
+            if (value_ptr && type == Type::Int64) {
+                int64_t value;
+                memcpy(&value, value_ptr, sizeof(value));
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("arr_get_i64", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_i64", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_get_i64", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+                return value;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_i64", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_get_i64", std::chrono::microseconds(0), ofs);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return 0;
     }
 
     double Buffer::arr_get_f64(size_t ofs, uint32_t index) const {
-        Type type;
-        const std::byte* value_ptr = arr_get_impl(ofs, index, type);
-        if (value_ptr && type == Type::Float64) {
-            double value;
-            memcpy(&value, value_ptr, sizeof(value));
-            return value;
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            Type type;
+            const std::byte* value_ptr = arr_get_impl(ofs, index, type);
+            if (value_ptr && type == Type::Float64) {
+                double value;
+                memcpy(&value, value_ptr, sizeof(value));
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("arr_get_f64", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_f64", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_get_f64", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+                return value;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_f64", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_get_f64", std::chrono::microseconds(0), ofs);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return 0.0;
     }
 
     std::string_view Buffer::arr_get_str(size_t ofs, uint32_t index) const {
-        Type type;
-        const std::byte* value_ptr = arr_get_impl(ofs, index, type);
-        if (value_ptr && type == Type::String) {
-            uint32_t size;
-            memcpy(&size, value_ptr, sizeof(size));
-            return std::string_view(reinterpret_cast<const char*>(value_ptr + sizeof(size)), size);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            Type type;
+            const std::byte* value_ptr = arr_get_impl(ofs, index, type);
+            if (value_ptr && type == Type::String) {
+                uint32_t size;
+                memcpy(&size, value_ptr, sizeof(size));
+                auto result = std::string_view(reinterpret_cast<const char*>(value_ptr + sizeof(size)), size);
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("arr_get_str", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_str", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_get_str", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+                return result;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_str", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_get_str", std::chrono::microseconds(0), ofs);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return {};
     }
 
     std::span<const std::byte> Buffer::arr_get_bytes(size_t ofs, uint32_t index) const {
-        Type type;
-        const std::byte* value_ptr = arr_get_impl(ofs, index, type);
-        if (value_ptr && type == Type::Bytes) {
-            uint32_t size;
-            memcpy(&size, value_ptr, sizeof(size));
-            return std::span<const std::byte>(value_ptr + sizeof(size), size);
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            Type type;
+            const std::byte* value_ptr = arr_get_impl(ofs, index, type);
+            if (value_ptr && type == Type::Bytes) {
+                uint32_t size;
+                memcpy(&size, value_ptr, sizeof(size));
+                auto result = std::span<const std::byte>(value_ptr + sizeof(size), size);
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("arr_get_bytes", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_bytes", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_get_bytes", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+                return result;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_bytes", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_get_bytes", std::chrono::microseconds(0), ofs);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return {};
     }
 
     size_t Buffer::arr_get_obj(size_t ofs, uint32_t index) const {
-        Type type;
-        const std::byte* value_ptr = arr_get_impl(ofs, index, type);
-        if (value_ptr && type == Type::Object) {
-            return value_ptr - m_data.data() - 1;
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            Type type;
+            const std::byte* value_ptr = arr_get_impl(ofs, index, type);
+            if (value_ptr && type == Type::Object) {
+                auto result = value_ptr - m_data.data() - 1;
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("arr_get_obj", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_obj", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_get_obj", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+                return result;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_obj", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_get_obj", std::chrono::microseconds(0), ofs);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return 0;
     }
 
     size_t Buffer::arr_get_arr(size_t ofs, uint32_t index) const {
-        Type type;
-        const std::byte* value_ptr = arr_get_impl(ofs, index, type);
-        if (value_ptr && type == Type::Array) {
-            return value_ptr - m_data.data() - 1;
+        auto start = std::chrono::high_resolution_clock::now();
+        try {
+            Type type;
+            const std::byte* value_ptr = arr_get_impl(ofs, index, type);
+            if (value_ptr && type == Type::Array) {
+                auto result = value_ptr - m_data.data() - 1;
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double> diff = end - start;
+                g_metrics.load(std::memory_order_acquire)->record_latency("arr_get_arr", diff.count());
+                g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_arr", "success");
+                log_if_enabled(LogLevel::Debug, "Operation completed successfully.", "arr_get_arr", std::chrono::duration_cast<std::chrono::microseconds>(diff), ofs);
+                return result;
+            }
+            throw lite3cpp::exception("Error in buffer operation");
+        } catch (...) {
+            g_metrics.load(std::memory_order_acquire)->increment_operation_count("arr_get_arr", "failure");
+            log_if_enabled(LogLevel::Error, "Operation failed.", "arr_get_arr", std::chrono::microseconds(0), ofs);
+            throw;
         }
-        throw lite3cpp::exception("Error in buffer operation");
-        return 0;
     }
 
     Type Buffer::arr_get_type(size_t ofs, uint32_t index) const {
