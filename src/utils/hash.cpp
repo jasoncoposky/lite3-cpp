@@ -1,6 +1,6 @@
 #include "utils/hash.hpp"
 
-namespace lite3::utils {
+namespace lite3cpp::utils {
 
     uint32_t djb2_hash(std::string_view key) {
         uint32_t hash = 5381;
@@ -10,4 +10,4 @@ namespace lite3::utils {
         return hash;
     }
 
-} // namespace lite3::utils
+} // namespace lite3cpp::utils

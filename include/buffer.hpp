@@ -1,5 +1,5 @@
-#ifndef LITE3_BUFFER_HPP
-#define LITE3_BUFFER_HPP
+#ifndef LITE3CPP_BUFFER_HPP
+#define LITE3CPP_BUFFER_HPP
 
 #include <vector>
 #include <cstddef>
@@ -13,7 +13,7 @@
 #include "utils/hash.hpp"
 #include "iterator.hpp"
 
-namespace lite3 {
+namespace lite3cpp {
 
     class Buffer {
     public:
@@ -62,7 +62,7 @@ namespace lite3 {
         Iterator end(size_t ofs) const;
 
     private:
-        friend class Node;
+        friend struct Node;
         friend class Iterator;
         friend class json;
         
@@ -78,6 +78,6 @@ namespace lite3 {
         size_t m_used_size;
     };
 
-} // namespace lite3
+} // namespace lite3cpp
 
-#endif // LITE3_BUFFER_HPP
+#endif // LITE3CPP_BUFFER_HPP

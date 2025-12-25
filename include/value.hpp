@@ -1,11 +1,11 @@
-#ifndef LITE3_VALUE_HPP
-#define LITE3_VALUE_HPP
+#ifndef LITE3CPP_VALUE_HPP
+#define LITE3CPP_VALUE_HPP
 
 #include <cstdint>
 #include <cstddef>
 #include "node.hpp"
 
-namespace lite3 {
+namespace lite3cpp {
 
     class Buffer;
 
@@ -15,6 +15,6 @@ namespace lite3 {
         static size_t read_size(const Buffer& buffer, size_t offset);
     };
 
-} // namespace lite3
+} // namespace lite3cpp
 
-#endif // LITE3_VALUE_HPP
+#endif // LITE3CPP_VALUE_HPP

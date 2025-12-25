@@ -1,11 +1,11 @@
-#ifndef LITE3_NODE_HPP
-#define LITE3_NODE_HPP
+#ifndef LITE3CPP_NODE_HPP
+#define LITE3CPP_NODE_HPP
 
 #include <cstdint>
 #include <array>
 #include "config.hpp"
 
-namespace lite3 {
+namespace lite3cpp {
 
     // Forward declaration
     class Buffer;
@@ -39,6 +39,6 @@ class Iterator;
         void write(Buffer& buffer, size_t offset) const;
     };
 
-} // namespace lite3
+} // namespace lite3cpp
 
-#endif // LITE3_NODE_HPP
+#endif // LITE3CPP_NODE_HPP

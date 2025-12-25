@@ -1,12 +1,12 @@
-#ifndef LITE3_ITERATOR_HPP
-#define LITE3_ITERATOR_HPP
+#ifndef LITE3CPP_ITERATOR_HPP
+#define LITE3CPP_ITERATOR_HPP
 
 #include "node.hpp"
 #include <string_view>
 #include <cstddef>
 #include <vector>
 
-namespace lite3 {
+namespace lite3cpp {
 
     class Buffer;
 
@@ -46,6 +46,6 @@ namespace lite3 {
         void find_next();
     };
 
-} // namespace lite3
+} // namespace lite3cpp
 
-#endif // LITE3_ITERATOR_HPP
+#endif // LITE3CPP_ITERATOR_HPP

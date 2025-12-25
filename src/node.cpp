@@ -1,8 +1,10 @@
 #include "node.hpp"
 #include "buffer.hpp"
 #include <cstring>
+#include "observability.hpp" // Add this
+#include <chrono> // Add this
 
-namespace lite3 {
+namespace lite3cpp {
 
     namespace {
         // Constants from lite3.c for bit manipulation
@@ -36,6 +38,8 @@ namespace lite3 {
 
         std::memcpy(kv_offsets.data(), data_ptr + 36, sizeof(kv_offsets));
         std::memcpy(child_offsets.data(), data_ptr + 64, sizeof(child_offsets));
+        lite3cpp::log_if_enabled(lite3cpp::LogLevel::Debug, "Node::write - Wrote node.", "NodeWrite", std::chrono::microseconds(0), offset);
+        lite3cpp::log_if_enabled(lite3cpp::LogLevel::Debug, "Node::read - Read node.", "NodeRead", std::chrono::microseconds(0), offset);
     }
 
     void Node::write(Buffer& buffer, size_t offset) const {
@@ -65,6 +69,6 @@ namespace lite3 {
         uint32_t child_ofs[config::node_key_count + 1];
     };
 
-} // namespace lite3
+} // namespace lite3cpp
 
 

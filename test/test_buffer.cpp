@@ -6,22 +6,22 @@
 void run_json_tests();
 
 void test_buffer_creation() {
-    lite3::Buffer buffer(1024);
+    lite3cpp::Buffer buffer(1024);
     assert(buffer.m_data.capacity() >= 1024);
     std::cout << "test_buffer_creation passed." << std::endl;
 }
 
 void test_object_initialization() {
-    lite3::Buffer buffer;
+    lite3cpp::Buffer buffer;
     buffer.init_object();
-    assert(buffer.m_used_size == lite3::config::node_size);
+    assert(buffer.m_used_size == lite3cpp::config::node_size);
     std::cout << "test_object_initialization passed." << std::endl;
 }
 
 void test_array_initialization() {
-    lite3::Buffer buffer;
+    lite3cpp::Buffer buffer;
     buffer.init_array();
-    assert(buffer.m_used_size == lite3::config::node_size);
+    assert(buffer.m_used_size == lite3cpp::config::node_size);
     std::cout << "test_array_initialization passed." << std::endl;
 }
 

@@ -1,38 +1,46 @@
 cmake_minimum_required(VERSION 3.10)
-project(lite3++)
+enable_testing()
+project(lite3-cpp)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_library(lite3++
+include(FetchContent)
+FetchContent_Declare(
+  gtest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG v1.17.0
+)
+FetchContent_MakeAvailable(gtest)
+
+add_library(lite3-cpp
     src/buffer.cpp
     src/iterator.cpp
     src/json.cpp
     src/node.cpp
     src/value.cpp
     src/utils/hash.cpp
+    src/observability.cpp
     C:/Users/jason/playground/lib/yyjson/src/yyjson.c
 )
+target_compile_options(lite3-cpp PRIVATE /MTd)
 
-target_include_directories(lite3++ PUBLIC 
+target_include_directories(lite3-cpp PUBLIC 
     "include"
     "include/utils"
     "C:/Users/jason/playground/lib/yyjson/src"
 )
 
-add_executable(lite3++_test
+add_executable(lite3-cpp_test
     test/test_buffer.cpp
     test/test_json.cpp
+    test/test_observability.cpp
 )
-target_link_libraries(lite3++_test PRIVATE lite3++)
+target_compile_options(lite3-cpp_test PRIVATE /MTd)
+target_link_libraries(lite3-cpp_test PRIVATE lite3-cpp gtest_main)
+add_test(NAME lite3-cpp_test COMMAND lite3-cpp_test)
 
-# For MSVC, ensure dynamic debug runtime library for Debug configuration
-if (MSVC)
-    set_target_properties(lite3++ PROPERTIES
-        MSVC_RUNTIME_LIBRARY "MultiThreadedDebugDLL"
-    )
-    set_target_properties(lite3++_test PROPERTIES
-        MSVC_RUNTIME_LIBRARY "MultiThreadedDebugDLL"
-    )
-endif()
+add_executable(observability_example examples/observability_example.cpp)
+target_compile_options(observability_example PRIVATE /MTd)
+target_link_libraries(observability_example PRIVATE lite3-cpp)

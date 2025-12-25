@@ -1,13 +1,13 @@
-#ifndef LITE3_HASH_HPP
-#define LITE3_HASH_HPP
+#ifndef LITE3CPP_HASH_HPP
+#define LITE3CPP_HASH_HPP
 
 #include <cstdint>
 #include <string_view>
 
-namespace lite3::utils {
+namespace lite3cpp::utils {
 
     uint32_t djb2_hash(std::string_view key);
 
-} // namespace lite3::utils
+} // namespace lite3cpp::utils
 
-#endif // LITE3_HASH_HPP
+#endif // LITE3CPP_HASH_HPP

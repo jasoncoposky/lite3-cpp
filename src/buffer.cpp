@@ -3,20 +3,24 @@
 #include "utils/hash.hpp"
 #include "value.hpp"
 #include "exception.hpp"
+#include "observability.hpp" // Add this
+#include <chrono> // Add this
 #include <cstring>
-#include <iostream> // For debugging
 
-namespace lite3 {
+namespace lite3cpp {
 
     Buffer::Buffer() : m_used_size(0) {
+        lite3cpp::log_if_enabled(lite3cpp::LogLevel::Debug, "Buffer default constructor called.", "BufferCtor", std::chrono::microseconds(0), 0);
         // Default constructor
     }
 
     Buffer::Buffer(size_t initial_size) : m_used_size(0) {
+        lite3cpp::log_if_enabled(lite3cpp::LogLevel::Debug, "Buffer parameterized constructor called.", "BufferCtor", std::chrono::microseconds(0), 0);
         m_data.reserve(initial_size);
     }
 
     void Buffer::init_object() {
+        lite3cpp::log_if_enabled(lite3cpp::LogLevel::Debug, "init_object called.", "InitObject", std::chrono::microseconds(0), 0);
         if (m_data.size() < config::node_size) {
             m_data.resize(config::node_size);
         }
@@ -71,6 +75,7 @@ namespace lite3 {
     }
 
     void Buffer::set_str(size_t ofs, std::string_view key, std::string_view value) {
+        lite3cpp::log_if_enabled(lite3cpp::LogLevel::Debug, "set_str called.", "SetString", std::chrono::microseconds(0), ofs, key);
         uint32_t hash = utils::djb2_hash(key);
         (void)set_impl(ofs, key, hash, value.size(), value.data(), Type::String);
     }
@@ -118,7 +123,7 @@ namespace lite3 {
         Node current_node;
         current_node.read(*this, ofs);
         if (current_node.type != Type::Array) {
-            throw lite3::exception("Error in buffer operation");
+            throw lite3cpp::exception("Error in buffer operation");
             return 0;
         }
         uint32_t index = current_node.size;
@@ -129,7 +134,7 @@ namespace lite3 {
         Node current_node;
         current_node.read(*this, ofs);
         if (current_node.type != Type::Array) {
-            throw lite3::exception("Error in buffer operation");
+            throw lite3cpp::exception("Error in buffer operation");
             return 0;
         }
         uint32_t index = current_node.size;
@@ -140,7 +145,7 @@ namespace lite3 {
         Node current_node;
         current_node.read(*this, ofs);
         if (current_node.type != Type::Array) {
-            throw lite3::exception("Error in buffer operation");
+            throw lite3cpp::exception("Error in buffer operation");
             return;
         }
         uint32_t index = current_node.size;
@@ -154,7 +159,7 @@ namespace lite3 {
         if (value_ptr && type == Type::Bool) {
             return *reinterpret_cast<const bool*>(value_ptr);
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return false;
     }
 
@@ -167,7 +172,7 @@ namespace lite3 {
             memcpy(&value, value_ptr, sizeof(value));
             return value;
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return 0;
     }
 
@@ -180,11 +185,12 @@ namespace lite3 {
             memcpy(&value, value_ptr, sizeof(value));
             return value;
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return 0.0;
     }
 
     std::string_view Buffer::get_str(size_t ofs, std::string_view key) const {
+        lite3cpp::log_if_enabled(lite3cpp::LogLevel::Debug, "get_str called.", "GetString", std::chrono::microseconds(0), ofs, key);
         uint32_t hash = utils::djb2_hash(key);
         Type type;
         const std::byte* value_ptr = get_impl(ofs, key, hash, type);
@@ -193,7 +199,7 @@ namespace lite3 {
             memcpy(&size, value_ptr, sizeof(size));
             return std::string_view(reinterpret_cast<const char*>(value_ptr + sizeof(size)), size);
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return {};
     }
 
@@ -206,7 +212,7 @@ namespace lite3 {
             memcpy(&size, value_ptr, sizeof(size));
             return std::span<const std::byte>(value_ptr + sizeof(size), size);
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return {};
     }
 
@@ -217,7 +223,7 @@ namespace lite3 {
         if (value_ptr && type == Type::Object) {
             return value_ptr - m_data.data() - 1;
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return 0;
     }
 
@@ -228,7 +234,7 @@ namespace lite3 {
         if (value_ptr && type == Type::Array) {
             return value_ptr - m_data.data() - 1;
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return 0;
     }
 
@@ -238,7 +244,7 @@ namespace lite3 {
         if (value_ptr && type == Type::Bool) {
             return *reinterpret_cast<const bool*>(value_ptr);
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return false;
     }
 
@@ -250,7 +256,7 @@ namespace lite3 {
             memcpy(&value, value_ptr, sizeof(value));
             return value;
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return 0;
     }
 
@@ -262,7 +268,7 @@ namespace lite3 {
             memcpy(&value, value_ptr, sizeof(value));
             return value;
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return 0.0;
     }
 
@@ -274,7 +280,7 @@ namespace lite3 {
             memcpy(&size, value_ptr, sizeof(size));
             return std::string_view(reinterpret_cast<const char*>(value_ptr + sizeof(size)), size);
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return {};
     }
 
@@ -286,7 +292,7 @@ namespace lite3 {
             memcpy(&size, value_ptr, sizeof(size));
             return std::span<const std::byte>(value_ptr + sizeof(size), size);
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return {};
     }
 
@@ -296,7 +302,7 @@ namespace lite3 {
         if (value_ptr && type == Type::Object) {
             return value_ptr - m_data.data() - 1;
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return 0;
     }
 
@@ -306,7 +312,7 @@ namespace lite3 {
         if (value_ptr && type == Type::Array) {
             return value_ptr - m_data.data() - 1;
         }
-        throw lite3::exception("Error in buffer operation");
+        throw lite3cpp::exception("Error in buffer operation");
         return 0;
     }
 
@@ -320,11 +326,11 @@ namespace lite3 {
         Node current_node;
         current_node.read(*this, ofs);
         if (current_node.type != Type::Array) {
-            throw lite3::exception("Error in buffer operation");
+            throw lite3cpp::exception("Error in buffer operation");
             return nullptr;
         }
         if (index >= current_node.size) {
-            throw lite3::exception("Error in buffer operation");
+            throw lite3cpp::exception("Error in buffer operation");
             return nullptr;
         }
 
@@ -381,8 +387,7 @@ namespace lite3 {
             if (current_node.child_offsets[0] != 0) { // Not a leaf
                 current_ofs = current_node.child_offsets[i];
                 if (++node_walks > config::tree_height_max) {
-                    // TODO: Throw exception
-                    return nullptr;
+                    throw lite3cpp::exception("Max tree height exceeded during get operation.");
                 }
             } else { // Leaf node, key not found
                 return nullptr;
@@ -495,8 +500,7 @@ namespace lite3 {
                 parent_node_loaded = true;
                 current_ofs = current_node.child_offsets[i];
                 if (++node_walks > config::tree_height_max) {
-                    // TODO: Throw exception
-                    return 0;
+                    throw lite3cpp::exception("Max tree height exceeded during set operation.");
                 }
             } else { // Leaf node
                 size_t kv_offset = append_kv(key, type, val_ptr, val_len);
@@ -616,4 +620,4 @@ namespace lite3 {
     
         return kv_offset;
     }
-} // namespace lite3
+} // namespace lite3cpp

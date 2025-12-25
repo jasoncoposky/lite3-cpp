@@ -1,8 +1,10 @@
 #include "iterator.hpp"
 #include "buffer.hpp"
 #include <cstring>  // For memcpy
+#include "observability.hpp" // Add this
+#include <chrono> // Add this
 
-namespace lite3 {
+namespace lite3cpp {
 
     Iterator::Iterator(const Buffer* buffer, size_t ofs, size_t node_offset) : m_buffer(buffer), m_depth(-1) {
         if(m_buffer) {
@@ -53,6 +55,7 @@ namespace lite3 {
     }
 
     void Iterator::find_next() {
+        lite3cpp::log_if_enabled(lite3cpp::LogLevel::Debug, "Iterator::find_next called.", "IteratorNext", std::chrono::microseconds(0), 0);
         if(m_depth < 0) {
             m_buffer = nullptr; // Mark as end
             return;
@@ -96,4 +99,4 @@ namespace lite3 {
         }
     }
 
-} // namespace lite3
+} // namespace lite3cpp

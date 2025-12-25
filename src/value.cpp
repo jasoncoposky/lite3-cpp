@@ -2,7 +2,7 @@
 #include "buffer.hpp"
 #include <cstring>
 
-namespace lite3 {
+namespace lite3cpp {
 
     void Value::write(Buffer& buffer, size_t& offset, Type type, const void* data, size_t size) {
         // Write type
@@ -60,4 +60,4 @@ namespace lite3 {
         }
     }
 
-} // namespace lite3
+} // namespace lite3cpp

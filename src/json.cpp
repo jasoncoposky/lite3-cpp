@@ -1,9 +1,11 @@
 #include "json.hpp"
+#include "exception.hpp"
 #include "yyjson.h"
 #include <vector>
+#include "observability.hpp" // Add this
+#include <chrono> // Add this
 
-namespace lite3 {
-    namespace lite3_json {
+namespace lite3cpp { namespace lite3_json {
 
         // Forward declarations for helper functions
         void from_yyjson_val(yyjson_val *val, Buffer& buffer, size_t ofs);
@@ -11,6 +13,7 @@ namespace lite3 {
         yyjson_mut_val* to_yyjson_val(const Buffer& buffer, size_t ofs, yyjson_mut_doc *doc);
 
         std::string to_json_string(const Buffer& buffer, size_t ofs) {
+            lite3cpp::log_if_enabled(lite3cpp::LogLevel::Info, "JSON stringify started.", "JsonStringify", std::chrono::microseconds(0), ofs);
             yyjson_mut_doc *doc = yyjson_mut_doc_new(nullptr);
             yyjson_mut_val *root = to_yyjson_val(buffer, ofs, doc);
             yyjson_mut_doc_set_root(doc, root);
@@ -22,10 +25,10 @@ namespace lite3 {
         }
 
         Buffer from_json_string(const std::string& json_str) {
+            lite3cpp::log_if_enabled(lite3cpp::LogLevel::Info, "JSON parse started.", "JsonParse", std::chrono::microseconds(0), 0);
             yyjson_doc *doc = yyjson_read(json_str.c_str(), json_str.size(), 0);
             if (!doc) {
-                // TODO: throw exception
-                return Buffer();
+                throw lite3cpp::exception("Invalid JSON string provided.");
             }
             yyjson_val *root = yyjson_doc_get_root(doc);
             Buffer buffer;
@@ -233,4 +236,4 @@ namespace lite3 {
             }
         }
     }
-} // namespace lite3
+} // namespace lite3cpp
