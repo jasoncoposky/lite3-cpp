@@ -1,0 +1,57 @@
+﻿Running main() from C:\Users\jason\playground\lib\lite3-cpp\build\_deps\gtest-src\googletest\src\gtest_main.cc
+[==========] Running 25 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 16 tests from BufferTest
+[ RUN      ] BufferTest.Creation
+[       OK ] BufferTest.Creation (0 ms)
+[ RUN      ] BufferTest.ObjectInitialization
+[       OK ] BufferTest.ObjectInitialization (0 ms)
+[ RUN      ] BufferTest.ArrayInitialization
+[       OK ] BufferTest.ArrayInitialization (0 ms)
+[ RUN      ] BufferTest.SetGetString
+[       OK ] BufferTest.SetGetString (0 ms)
+[ RUN      ] BufferTest.SetGetInt
+[       OK ] BufferTest.SetGetInt (0 ms)
+[ RUN      ] BufferTest.SetGetBool
+[       OK ] BufferTest.SetGetBool (0 ms)
+[ RUN      ] BufferTest.SetGetNull
+[       OK ] BufferTest.SetGetNull (0 ms)
+[ RUN      ] BufferTest.ArrayAppendGetString
+[       OK ] BufferTest.ArrayAppendGetString (0 ms)
+[ RUN      ] BufferTest.ArrayAppendGetInt
+[       OK ] BufferTest.ArrayAppendGetInt (0 ms)
+[ RUN      ] BufferTest.ArrayAppendGetBool
+[       OK ] BufferTest.ArrayAppendGetBool (0 ms)
+[ RUN      ] BufferTest.ArrayAppendGetNull
+[       OK ] BufferTest.ArrayAppendGetNull (0 ms)
+[ RUN      ] BufferTest.BTreeSplit
+.\Debug\lite3-cpp_tes
+t.exe : C:\Program 
+Files 
+(x86)\Microsoft 
+Visual Studio\2019\Bu
+ildTools\VC\Tools\MSV
+C\14.29.30133\include
+\array(551) : 
+Assertion failed: 
+array subscript out 
+of range
+At line:1 char:1
++ .\Debug\lite3-cpp_t
+est.exe > 
+../test_output.txt 
+2>&1
++ ~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~
+    + CategoryInfo   
+           : NotSpe  
+  cified: (C:\Prog   
+ ram File...pt ou    
+t of range:Strin    
+g) [], RemoteExc    
+eption
+    + FullyQualified 
+   ErrorId : Native  
+  CommandError
+ 

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "observability.hpp"
+#include "buffer.hpp" // Added for buffer operations
 #include <thread>
 #include <vector>
 #include <atomic>
@@ -33,6 +34,31 @@ struct ObservabilityTest : public ::testing::Test {
         lite3cpp::set_metrics(nullptr);
     }
 };
+
+TEST_F(ObservabilityTest, LoggingMetricsInvocation) {
+    MockLogger mock_logger;
+    MockMetrics mock_metrics;
+
+    lite3cpp::set_logger(&mock_logger);
+    lite3cpp::set_metrics(&mock_metrics);
+    lite3cpp::set_log_level_threshold(lite3cpp::LogLevel::Debug); // Ensure debug logs are captured
+
+    lite3cpp::Buffer buffer;
+    buffer.init_object();
+    buffer.set_str(0, "test_key", "test_value");
+
+    // Expect at least one log call for init_object and set_str each, plus any internal debug logs.
+    // Exact count might vary based on internal logging. We'll assert at least one for each.
+    ASSERT_GT(mock_logger.log_call_count.load(), 0);
+    ASSERT_GT(mock_metrics.metric_call_count.load(), 0);
+
+    // Perform a get operation
+    buffer.get_str(0, "test_key");
+
+    // Expect more calls after get operation
+    ASSERT_GT(mock_logger.log_call_count.load(), 2); // Initial logs + get log
+    ASSERT_GT(mock_metrics.metric_call_count.load(), 2); // Initial metrics + get metrics
+}
 
 TEST_F(ObservabilityTest, ThreadSafetySetLogger) {
     MockLogger mock_logger1;

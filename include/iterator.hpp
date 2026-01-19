@@ -12,7 +12,7 @@ namespace lite3cpp {
 
     class Iterator {
     public:
-        Iterator(const Buffer* buffer, size_t ofs, size_t node_offset);
+        Iterator(const Buffer* buffer, size_t ofs, size_t node_offset, uint32_t initial_buffer_generation);
 
         Iterator& operator++();
         // TODO: post-increment
@@ -32,6 +32,7 @@ namespace lite3cpp {
 
     private:
         const Buffer* m_buffer;
+        uint32_t m_initial_buffer_generation;
         
         struct
         {
