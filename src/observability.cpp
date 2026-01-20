@@ -22,6 +22,12 @@ public:
   bool set_buffer_capacity(size_t) override { return true; }
   bool increment_node_splits() override { return true; }
   bool increment_hash_collisions() override { return true; }
+
+  bool record_bytes_received(size_t) override { return true; }
+  bool record_bytes_sent(size_t) override { return true; }
+  bool increment_active_connections() override { return true; }
+  bool decrement_active_connections() override { return true; }
+  bool record_error(int) override { return true; }
 };
 
 static NullLogger null_logger;

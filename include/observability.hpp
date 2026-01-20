@@ -28,6 +28,17 @@ public:
   virtual bool set_buffer_capacity(size_t capacity_bytes) = 0;
   virtual bool increment_node_splits() = 0;
   virtual bool increment_hash_collisions() = 0;
+
+  // Reduced Traffic Metrics
+  virtual bool record_bytes_received(size_t bytes) = 0;
+  virtual bool record_bytes_sent(size_t bytes) = 0;
+
+  // Active Connection Gauge
+  virtual bool increment_active_connections() = 0;
+  virtual bool decrement_active_connections() = 0;
+
+  // Errors
+  virtual bool record_error(int status_code) = 0;
 };
 
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
