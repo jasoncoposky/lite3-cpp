@@ -23,14 +23,14 @@ add_library(lite3-cpp
     src/utils/hash.cpp
     src/utils/hex.cpp
     src/observability.cpp
-    C:/Users/jason/playground/lib/yyjson/src/yyjson.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../yyjson/src/yyjson.c
 )
 # target_compile_options(lite3-cpp PRIVATE /MTd)
 
 target_include_directories(lite3-cpp PUBLIC 
-    "include"
-    "include/utils"
-    "C:/Users/jason/playground/lib/yyjson/src"
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/utils>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../yyjson/src>
 )
 
 # add_executable(lite3-cpp_test

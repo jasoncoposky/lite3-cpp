@@ -1,5 +1,5 @@
 # lite3-cpp (formerly lite3++)
-A C++ port of the lite3-cpp zero copy serialization library
+A C++ port of the [lite3.io](https://lite3.io/) zero copy serialization library.
 
 ## Observability Interface
 
