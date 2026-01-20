@@ -1,6 +1,21 @@
 # lite3-cpp (formerly lite3++)
 A C++ port of the [lite3.io](https://lite3.io/) zero copy serialization library.
 
+## Configuration & Performance
+
+High-performance applications can disable the observability subsystem at compile time to eliminate all overhead (zero-cost).
+
+### CMake Options
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `LITE3CPP_DISABLE_OBSERVABILITY` | `ON` | If `ON`, all logging/metrics calls are no-ops. Set to `OFF` to enable. |
+
+**To enable observability:**
+```bash
+cmake -DLITE3CPP_DISABLE_OBSERVABILITY=OFF ..
+```
+
 ## Observability Interface
 
 The `lite3-cpp` library provides an extensible observability interface through `ILogger` and `IMetrics` to allow users to integrate their custom logging and metrics collection systems.
