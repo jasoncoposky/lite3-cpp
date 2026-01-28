@@ -1,4 +1,5 @@
 # lite3-cpp (formerly lite3++)
+![lite3-cpp logo](lite3_cpp_logo.jpg)
 A C++ port of the [lite3.io](https://lite3.io/) zero copy serialization library.
 
 ## Configuration & Performance
