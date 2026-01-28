@@ -258,3 +258,60 @@ TEST_F(BufferTest, ArrayOverwrite) {
   // it's missing, I should add it or skip this test. Actually, let's HOLD OFF
   // on this test until verified.
 }
+
+TEST_F(BufferTest, ManualBufferOperations) {
+  buffer.init_object();
+
+  // 1. set_i64 followed by get_type check (Off-by-One Read Bug)
+  buffer.set_i64(0, "test_key", 12345);
+  lite3cpp::Type type = buffer.get_type(0, "test_key");
+  ASSERT_EQ(type, lite3cpp::Type::Int64);
+  ASSERT_EQ(buffer.get_i64(0, "test_key"), 12345);
+
+  // 2. Update/Patch (set_i64 on existing key) followed by retrieval (Update
+  // Corruption Bug) Updating existing key with new value
+  buffer.set_i64(0, "test_key", 67890);
+
+  // Verify value is updated
+  int64_t val = buffer.get_i64(0, "test_key");
+  ASSERT_EQ(val, 67890);
+
+  // Verify type is still correct
+  type = buffer.get_type(0, "test_key");
+  ASSERT_EQ(type, lite3cpp::Type::Int64);
+}
+
+TEST_F(BufferTest, PatchSidecar) {
+  // Coverage: Validates the end-to-end flow of updating a key and verifying
+  // it remains retrievable, which was exactly what failed during development.
+
+  buffer.init_object();
+
+  // Initial state
+  buffer.set_str(0, "sidecar_config", "v1.0");
+  buffer.set_i64(0, "sidecar_id", 100);
+
+  ASSERT_EQ(buffer.get_str(0, "sidecar_config"), "v1.0");
+  ASSERT_EQ(buffer.get_i64(0, "sidecar_id"), 100);
+
+  // Patch update: change config version
+  buffer.set_str(0, "sidecar_config", "v1.1-patched");
+
+  // Verify update stuck
+  ASSERT_EQ(buffer.get_str(0, "sidecar_config"), "v1.1-patched");
+
+  // Verify other keys remain intact
+  ASSERT_EQ(buffer.get_i64(0, "sidecar_id"), 100);
+
+  // Patch update: change ID type? No, stick to value update first.
+  buffer.set_i64(0, "sidecar_id", 101);
+  ASSERT_EQ(buffer.get_i64(0, "sidecar_id"), 101);
+
+  // Verify structure integrity by adding a new key after patch
+  buffer.set_bool(0, "sidecar_active", true);
+  ASSERT_EQ(buffer.get_bool(0, "sidecar_active"), true);
+
+  // Retrieve all again to ensure no corruption
+  ASSERT_EQ(buffer.get_str(0, "sidecar_config"), "v1.1-patched");
+  ASSERT_EQ(buffer.get_i64(0, "sidecar_id"), 101);
+}

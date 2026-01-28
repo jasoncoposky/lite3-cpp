@@ -14,10 +14,16 @@ namespace lite3cpp {
 static int compare_node_key(const uint8_t *base, const NodeView &node, int idx,
                             uint32_t hash, std::string_view key, bool is_arr) {
   uint32_t nh = node.get_hash(idx);
-  if (nh < hash)
+  if (nh < hash) {
+    // std::cout << "DEBUG: Hash mismatch (less): " << nh << " < " << hash
+    //           << std::endl;
     return -1;
-  if (nh > hash)
+  }
+  if (nh > hash) {
+    // std::cout << "DEBUG: Hash mismatch (greater): " << nh << " > " << hash
+    //           << std::endl;
     return 1;
+  }
   if (is_arr)
     return 0; // Arrays use unique index as hash
 
@@ -27,7 +33,10 @@ static int compare_node_key(const uint8_t *base, const NodeView &node, int idx,
   size_t ksz = klen - 1;
 
   std::string_view existing(reinterpret_cast<const char *>(base + vo + 1), ksz);
-  return existing.compare(key);
+  int cmp = existing.compare(key);
+  // std::cout << "DEBUG: Key compare: '" << existing << "' vs '" << key
+  //           << "' = " << cmp << std::endl;
+  return cmp;
 }
 
 struct ScopedMetric {
@@ -122,7 +131,13 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
     node.set_gen_type(node.generation() + 1, node.type());
 
     // Check Split
+    // std::cout << "DEBUG: Checking split: " << node.key_count() << " >= " <<
+    // config::node_key_count_max << std::endl;
     if (node.key_count() >= config::node_key_count_max) {
+      if (ILogger *logger = g_logger.load(std::memory_order_acquire)) {
+        logger->log(LogLevel::Info, "Node is full, splitting", "set_impl",
+                    std::chrono::microseconds(0), 0, "");
+      }
       size_t next_aligned = (m_used_size + config::node_alignment - 1) &
                             ~(config::node_alignment - 1);
       size_t space_needed = (parent_ofs == SIZE_MAX) ? (2 * config::node_size)
@@ -232,31 +247,43 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
 
     if (i < count && compare_node_key(m_data.data(), node, i, key_hash, key,
                                       is_append) == 0) {
-      // Update
+      // Update - Must rewrite Key + Value because kv_offset is absolute
+      size_t klen = is_append ? 0 : (key.size() + key_tag_size + 1);
+
       size_t val_total_len = 1 + val_len; // Type+Data
       if (type == Type::String || type == Type::Bytes)
         val_total_len += 4;
       if (type == Type::String)
         val_total_len++;
 
-      ensure_capacity(val_total_len);
+      ensure_capacity(klen + val_total_len);
       node_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + node_ofs);
       MutableNodeView(node_ptr).set_kv_offset(i, m_used_size);
 
-      size_t w = m_used_size;
-      m_used_size += val_total_len;
-      m_data[w++] = static_cast<uint8_t>(type);
+      size_t start = m_used_size;
+      m_used_size += klen + val_total_len;
+
+      // Write Key
+      if (!is_append) {
+        m_data[start] =
+            static_cast<uint8_t>((key.size() + 1) << 2); // Simplified tag
+        std::memcpy(m_data.data() + start + 1, key.data(), key.size());
+        m_data[start + 1 + key.size()] = 0; // Null Check
+      }
+
+      size_t vstart = start + klen;
+      m_data[vstart++] = static_cast<uint8_t>(type);
       if (type == Type::String || type == Type::Bytes) {
         uint32_t sz = static_cast<uint32_t>(val_len);
-        std::memcpy(m_data.data() + w, &sz, 4);
-        w += 4;
+        std::memcpy(m_data.data() + vstart, &sz, 4);
+        vstart += 4;
         if (val_len)
-          std::memcpy(m_data.data() + w, val_ptr, val_len);
+          std::memcpy(m_data.data() + vstart, val_ptr, val_len);
         if (type == Type::String)
-          m_data[w + val_len] = 0;
+          m_data[vstart + val_len] = 0;
       } else {
         if (val_len)
-          std::memcpy(m_data.data() + w, val_ptr, val_len);
+          std::memcpy(m_data.data() + vstart, val_ptr, val_len);
       }
       return m_used_size - val_total_len; // Return start of value?
     }
@@ -321,44 +348,59 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
   }
 }
 
-// Get Implementation
 const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
                                   uint32_t hash, Type &type,
                                   bool is_array_op) const {
   ScopedMetric sm("get");
   size_t node_ofs = ofs;
+  // std::cout << "DEBUG: get_impl key='" << key << "' hash=" << hash <<
+  // std::endl;
   while (true) {
     NodeView node(
         reinterpret_cast<const PackedNodeLayout *>(m_data.data() + node_ofs));
     // Search
     int i = 0;
     int count = node.key_count();
-    while (i < count &&
-           compare_node_key(m_data.data(), node, i, hash, key, is_array_op) < 0)
-      i++;
+    // std::cout << "DEBUG: Scanning node at ofs " << node_ofs
+    //           << ", count=" << count << std::endl;
+    while (i < count) {
+      int c = compare_node_key(m_data.data(), node, i, hash, key, is_array_op);
+      if (c < 0) {
+        // std::cout << "DEBUG: i=" << i << " compare < 0" << std::endl;
+        i++;
+      } else if (c == 0) {
+        break;
+      } else {
+        // std::cout << "DEBUG: i=" << i << " compare > 0" << std::endl;
+        break; // sorted
+      }
+    }
 
     if (i < count &&
         compare_node_key(m_data.data(), node, i, hash, key, is_array_op) == 0) {
+      // std::cout << "DEBUG: Found match at index " << i << std::endl;
       size_t kv_ofs = node.get_kv_offset(i);
       // Skip key (since we confirmed match, we just skip it to get value)
       size_t vo = kv_ofs;
       if (!is_array_op) {
         uint8_t tag = m_data[vo];
         uint32_t klen = (tag >> 2);
-        vo += 1 + klen - 1;
+        vo += 1 + klen;
       }
 
       type = static_cast<Type>(m_data[vo]);
       return reinterpret_cast<const std::byte *>(m_data.data() + vo + 1);
     }
     if (node.get_child_offset(i)) {
+      // std::cout << "DEBUG: Descending child " << i << std::endl;
       node_ofs = node.get_child_offset(i);
       continue;
     }
+    // std::cout << "DEBUG: Not found in node." << std::endl;
     return nullptr;
   }
 }
-// Wrappers
+
 void Buffer::set_null(size_t ofs, std::string_view key) {
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
   auto start = std::chrono::high_resolution_clock::now();
@@ -461,14 +503,20 @@ size_t Buffer::set_arr(size_t ofs, std::string_view key) {
 // Array appends - stub or implement
 void Buffer::arr_append_impl(size_t ofs, size_t val_len, const void *val_ptr,
                              Type type) {
+  // We need size only to calculate idx
+  size_t current_size =
+      NodeView(reinterpret_cast<const PackedNodeLayout *>(m_data.data() + ofs))
+          .size();
+
+  set_impl(ofs, {}, static_cast<uint32_t>(current_size), val_len, val_ptr, type,
+           true);
+
+  // Re-acquire pointer as set_impl might have resized m_data
   MutableNodeView arr(
       reinterpret_cast<PackedNodeLayout *>(m_data.data() + ofs));
-  uint32_t idx = arr.size(); // Use size as index
-  set_impl(ofs, {}, idx, val_len, val_ptr, type, true);
-  // Update size? set_impl didn't update parent size...
-  // Array appends usually update the Array Node size.
-  // Since `ofs` IS the Array Node, we can update it!
-  arr.set_size_kc(idx + 1, arr.key_count());
+
+  // Update size (key_count was updated by set_impl)
+  arr.set_size(static_cast<uint32_t>(current_size + 1));
 }
 
 void Buffer::arr_append_null(size_t ofs) {
@@ -492,12 +540,11 @@ void Buffer::arr_append_bytes(size_t ofs, std::span<const std::byte> v) {
 }
 size_t Buffer::arr_append_obj(size_t ofs) {
   size_t idx =
-      MutableNodeView(reinterpret_cast<PackedNodeLayout *>(m_data.data() + ofs))
+      NodeView(reinterpret_cast<const PackedNodeLayout *>(m_data.data() + ofs))
           .size();
-  size_t o = set_impl(ofs, {}, idx, 0, nullptr, Type::Object, true);
-  // Unlike set_obj, we don't return offset of value, but offset of NODE?
-  // set_impl returns offset of value.
-  // We need to init object there.
+  size_t o = set_impl(ofs, {}, static_cast<uint32_t>(idx), 0, nullptr,
+                      Type::Object, true);
+
   ensure_capacity(config::node_size);
   std::memset(m_data.data() + o + 1, 0, config::node_size - 8);
   MutableNodeView n(
@@ -505,25 +552,20 @@ size_t Buffer::arr_append_obj(size_t ofs) {
   n.set_gen_type(1, Type::Object);
   m_used_size += config::node_size;
 
-  // Update parent Array size
+  // Re-acquire in case ensure_capacity resized
   MutableNodeView arr(
       reinterpret_cast<PackedNodeLayout *>(m_data.data() + ofs));
-  arr.set_size(idx + 1); // Only update size, key_count updated in set_impl?
-  // set_impl updates key_count?
-  // In recursive set_impl: line 262 `node_upd.set_key_count(count + 1)`.
-  // But `arr_append_impl` lines 402-411 also does manual `set_size_kc`.
-  // If I call `set_impl` directly here, I should update size manually like
-  // `arr_append_impl`. Actually I should just use `arr_append_impl` logic
-  // or refactor. Re-use logic:
-  arr.set_size_kc(idx + 1, arr.key_count());
+  arr.set_size(static_cast<uint32_t>(idx + 1));
 
   return o + 1;
 }
 size_t Buffer::arr_append_arr(size_t ofs) {
   size_t idx =
-      MutableNodeView(reinterpret_cast<PackedNodeLayout *>(m_data.data() + ofs))
+      NodeView(reinterpret_cast<const PackedNodeLayout *>(m_data.data() + ofs))
           .size();
-  size_t o = set_impl(ofs, {}, idx, 0, nullptr, Type::Array, true);
+  size_t o = set_impl(ofs, {}, static_cast<uint32_t>(idx), 0, nullptr,
+                      Type::Array, true);
+
   ensure_capacity(config::node_size);
   std::memset(m_data.data() + o + 1, 0, config::node_size - 8);
   MutableNodeView n(
@@ -533,7 +575,7 @@ size_t Buffer::arr_append_arr(size_t ofs) {
 
   MutableNodeView arr(
       reinterpret_cast<PackedNodeLayout *>(m_data.data() + ofs));
-  arr.set_size_kc(idx + 1, arr.key_count());
+  arr.set_size(static_cast<uint32_t>(idx + 1));
 
   return o + 1;
 }
