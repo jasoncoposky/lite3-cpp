@@ -39,6 +39,12 @@ public:
 
   // Errors
   virtual bool record_error(int status_code) = 0;
+
+  // Replication/Sync Metrics
+  virtual bool increment_sync_ops(std::string_view type) = 0;
+  virtual bool increment_keys_repaired() = 0;
+  virtual bool increment_mesh_bytes(std::string_view lane, size_t bytes,
+                                    bool is_send) = 0;
 };
 
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY

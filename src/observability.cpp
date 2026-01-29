@@ -28,6 +28,12 @@ public:
   bool increment_active_connections() override { return true; }
   bool decrement_active_connections() override { return true; }
   bool record_error(int) override { return true; }
+
+  bool increment_sync_ops(std::string_view) override { return true; }
+  bool increment_keys_repaired() override { return true; }
+  bool increment_mesh_bytes(std::string_view, size_t, bool) override {
+    return true;
+  }
 };
 
 static NullLogger null_logger;

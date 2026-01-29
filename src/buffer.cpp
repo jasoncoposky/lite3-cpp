@@ -73,6 +73,9 @@ Buffer::Buffer(size_t initial_size) : m_used_size(0) {
   m_data.reserve(initial_size);
 }
 
+Buffer::Buffer(std::vector<uint8_t> data)
+    : m_data(std::move(data)), m_used_size(m_data.size()) {}
+
 void Buffer::ensure_capacity(size_t required_bytes) {
   if (m_used_size + required_bytes > m_data.size()) {
     size_t new_size = std::max(m_data.size() * 2, m_used_size + required_bytes);
