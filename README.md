@@ -1,6 +1,12 @@
 # lite3-cpp (formerly lite3++)
 ![lite3-cpp logo](assets/lite3_cpp_logo.jpg)
 A C++ port of the [lite3.io](https://lite3.io/) zero copy serialization library.
+A C++ port of the [lite3.io](https://lite3.io/) zero copy serialization library.
+
+## Features
+*   **Modern C++ API**: Intuitive `Document`, `Value`, `Object`, `Array` proxies (`doc["key"] = 42`).
+*   **Zero-Copy**: Operates directly on mutation-friendly B-Tree buffers.
+*   **Zero-Parse**: Read/Modify/Write without deserializing the entire document.
 
 ## Configuration & Performance
 
