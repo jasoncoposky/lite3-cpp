@@ -137,10 +137,12 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
     // std::cout << "DEBUG: Checking split: " << node.key_count() << " >= " <<
     // config::node_key_count_max << std::endl;
     if (node.key_count() >= config::node_key_count_max) {
+#ifndef LITE3CPP_DISABLE_OBSERVABILITY
       if (ILogger *logger = g_logger.load(std::memory_order_acquire)) {
         logger->log(LogLevel::Info, "Node is full, splitting", "set_impl",
                     std::chrono::microseconds(0), 0, "");
       }
+#endif
       size_t next_aligned = (m_used_size + config::node_alignment - 1) &
                             ~(config::node_alignment - 1);
       size_t space_needed = (parent_ofs == SIZE_MAX) ? (2 * config::node_size)
@@ -250,7 +252,7 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
 
     if (i < count && compare_node_key(m_data.data(), node, i, key_hash, key,
                                       is_append) == 0) {
-      // Update - Must rewrite Key + Value because kv_offset is absolute
+      // Calculate new size requirements early for both paths
       size_t klen = is_append ? 0 : (key.size() + key_tag_size + 1);
 
       size_t val_total_len = 1 + val_len; // Type+Data
@@ -259,7 +261,64 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       if (type == Type::String)
         val_total_len++;
 
+      // === OPTIMIZATION: Check for In-Place Update ===
+      size_t kv_ofs = node.get_kv_offset(i);
+
+      // Calculate existing value offset
+      size_t vo = kv_ofs;
+      if (!is_append) {
+        uint8_t tag = m_data[vo];
+        uint32_t existing_klen = (tag >> 2);
+        vo +=
+            1 +
+            existing_klen; // Skip Tag + Key + Null (Note: tag>>2 includes null)
+      }
+
+      // Check existing value size
+      Type existing_type = static_cast<Type>(m_data[vo]);
+      size_t existing_vlen = 0;
+      size_t existing_total_len = 1; // Type
+
+      if (existing_type == Type::String || existing_type == Type::Bytes) {
+        std::memcpy(&existing_vlen, m_data.data() + vo + 1, 4);
+        existing_total_len += 4 + existing_vlen; // Type + Size + Data
+        if (existing_type == Type::String)
+          existing_total_len++; // Null
+      } else {
+        // Fixed types
+        if (existing_type == Type::Bool)
+          existing_vlen = 1;
+        else if (existing_type == Type::Int64 || existing_type == Type::Float64)
+          existing_vlen = 8;
+        else if (existing_type == Type::Null)
+          existing_vlen = 0;
+        existing_total_len += existing_vlen;
+      }
+
+      if (existing_total_len == val_total_len) {
+        // Overwrite in place!
+        size_t vstart = vo + 1;                  // Skip Type
+        m_data[vo] = static_cast<uint8_t>(type); // Update Type
+
+        if (type == Type::String || type == Type::Bytes) {
+          uint32_t sz = static_cast<uint32_t>(val_len);
+          std::memcpy(m_data.data() + vstart, &sz, 4);
+          vstart += 4;
+          if (val_len)
+            std::memcpy(m_data.data() + vstart, val_ptr, val_len);
+          if (type == Type::String)
+            m_data[vstart + val_len] = 0;
+        } else {
+          if (val_len)
+            std::memcpy(m_data.data() + vstart, val_ptr, val_len);
+        }
+        return vo;
+      }
+      // ===============================================
+
+      // Fallback: Append
       ensure_capacity(klen + val_total_len);
+      // Re-acquire pointers after resize
       node_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + node_ofs);
       MutableNodeView(node_ptr).set_kv_offset(i, m_used_size);
 

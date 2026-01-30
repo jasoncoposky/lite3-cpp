@@ -21,6 +21,9 @@ add_library(lite3-cpp
     src/json.cpp
     src/node.cpp
     src/value.cpp
+    src/document.cpp
+    src/object.cpp
+    src/array.cpp
     src/utils/hash.cpp
     src/utils/hex.cpp
     src/observability.cpp
@@ -38,6 +41,7 @@ add_executable(lite3-cpp_test
     test/test_buffer_operations.cpp
     test/test_json.cpp
     test/test_observability.cpp
+    test/test_modern_api.cpp
 )
 # target_compile_options(lite3-cpp_test PRIVATE /MTd)
 target_link_libraries(lite3-cpp_test PRIVATE lite3-cpp gtest_main)

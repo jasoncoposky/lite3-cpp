@@ -1,74 +1,177 @@
 #include "value.hpp"
+#include "array.hpp"
 #include "buffer.hpp"
-#include <algorithm> // for max
-#include <cstring>
-
+#include "exception.hpp"
+#include "object.hpp"
+#include <cstdio>
 
 namespace lite3cpp {
 
-void Value::write(Buffer &buffer, size_t &offset, Type type, const void *data,
-                  size_t size) {
-  // Write type
-  if (offset >= buffer.m_data.size())
-    buffer.m_data.resize(std::max(buffer.m_data.size() * 2, offset + 1));
-  buffer.m_data[offset++] = static_cast<uint8_t>(type);
-
-  // Write data
-  if (type == Type::String || type == Type::Bytes) {
-    uint32_t len = static_cast<uint32_t>(size);
-    size_t required =
-        offset + sizeof(len) + len + (type == Type::String ? 1 : 0);
-    if (buffer.m_data.size() < required) {
-      buffer.m_data.resize(std::max(buffer.m_data.size() * 2, required));
-    }
-    std::memcpy(buffer.m_data.data() + offset, &len, sizeof(len));
-    offset += sizeof(len);
-    if (data && len > 0) {
-      std::memcpy(buffer.m_data.data() + offset, data, len);
-      offset += len;
-    }
-    if (type == Type::String) {
-      buffer.m_data[offset++] = 0; // Null terminator
-    }
-  } else {
-    if (buffer.m_data.size() < offset + size) {
-      buffer.m_data.resize(std::max(buffer.m_data.size() * 2, offset + size));
-    }
-    if (data && size > 0) {
-      std::memcpy(buffer.m_data.data() + offset, data, size);
-    }
-    offset += size;
-  }
+Value::Value(Buffer *buf, size_t parent_ofs)
+    : m_buffer(buf), m_offset(0), m_parent_ofs(parent_ofs), m_index(0),
+      m_is_array_element(false) {
+  // printf("DEBUG: Value::Value constructor (buf=%p, pofs=%zu)\n",
+  // (void*)m_buffer, m_parent_ofs);
 }
 
-size_t Value::read_size(const Buffer &buffer, size_t offset) {
-  if (offset >= buffer.m_data.size())
-    return 0;
-  Type type = static_cast<Type>(buffer.m_data[offset]);
-  offset++;
-  switch (type) {
-  case Type::Null:
-    return 0;
-  case Type::Bool:
-    return sizeof(bool);
-  case Type::Int64:
-    return sizeof(int64_t);
-  case Type::Float64:
-    return sizeof(double);
-  case Type::Bytes:
-  case Type::String: {
-    if (offset + sizeof(uint32_t) > buffer.m_data.size())
-      return 0;
-    uint32_t size = 0;
-    std::memcpy(&size, buffer.m_data.data() + offset, sizeof(uint32_t));
-    return sizeof(uint32_t) + size + (type == Type::String ? 1 : 0);
+Type Value::type() const {
+  try {
+    if (!m_key.empty())
+      return m_buffer->get_type(m_parent_ofs, m_key);
+    if (m_is_array_element)
+      return m_buffer->arr_get_type(m_parent_ofs, m_index);
+  } catch (...) {
   }
-  case Type::Object:
-  case Type::Array:
-    return config::node_size;
-  default:
-    return 0;
+  return Type::Null;
+}
+
+Value Value::operator[](std::string_view key) {
+  size_t current_node_ofs = m_offset;
+  if (m_offset == 0) {
+    if (!m_key.empty()) {
+      try {
+        current_node_ofs = m_buffer->get_obj(m_parent_ofs, m_key);
+      } catch (...) {
+        current_node_ofs = m_buffer->set_obj(m_parent_ofs, m_key);
+      }
+    } else if (m_is_array_element) {
+      try {
+        current_node_ofs = m_buffer->arr_get_obj(m_parent_ofs, m_index);
+      } catch (...) {
+        current_node_ofs = m_buffer->arr_append_obj(m_parent_ofs);
+      }
+    } else {
+      current_node_ofs = 0;
+    }
   }
+
+  Value v(m_buffer, 0);
+  v.m_parent_ofs = current_node_ofs;
+  v.m_key = std::string(key);
+  v.m_is_array_element = false;
+  // printf("DEBUG: Value::operator[] (key=%s, cur_node_ofs=%zu, v.pofs=%zu)\n",
+  // std::string(key).c_str(), current_node_ofs, v.m_parent_ofs);
+  return v;
+}
+
+Value Value::operator[](uint32_t index) {
+  size_t current_node_ofs = m_offset;
+  if (m_offset == 0) {
+    if (!m_key.empty()) {
+      try {
+        current_node_ofs = m_buffer->get_arr(m_parent_ofs, m_key);
+      } catch (...) {
+        current_node_ofs = m_buffer->set_arr(m_parent_ofs, m_key);
+      }
+    } else if (m_is_array_element) {
+      try {
+        current_node_ofs = m_buffer->arr_get_arr(m_parent_ofs, m_index);
+      } catch (...) {
+        current_node_ofs = m_buffer->arr_append_arr(m_parent_ofs);
+      }
+    }
+  }
+
+  Value v(m_buffer, 0);
+  v.m_parent_ofs = current_node_ofs;
+  v.m_index = index;
+  v.m_is_array_element = true;
+  return v;
+}
+
+Value::operator bool() const {
+  try {
+    if (m_is_array_element)
+      return m_buffer->arr_get_bool(m_parent_ofs, m_index);
+    if (!m_key.empty())
+      return m_buffer->get_bool(m_parent_ofs, m_key);
+  } catch (...) {
+  }
+  return false;
+}
+
+Value::operator int64_t() const {
+  try {
+    if (m_is_array_element)
+      return m_buffer->arr_get_i64(m_parent_ofs, m_index);
+    if (!m_key.empty())
+      return m_buffer->get_i64(m_parent_ofs, m_key);
+  } catch (...) {
+  }
+  return 0;
+}
+
+Value::operator double() const {
+  try {
+    if (m_is_array_element)
+      return m_buffer->arr_get_f64(m_parent_ofs, m_index);
+    if (!m_key.empty())
+      return m_buffer->get_f64(m_parent_ofs, m_key);
+  } catch (...) {
+  }
+  return 0.0;
+}
+
+Value::operator std::string_view() const {
+  try {
+    if (m_is_array_element)
+      return m_buffer->arr_get_str(m_parent_ofs, m_index);
+    if (!m_key.empty()) {
+      std::string_view s = m_buffer->get_str(m_parent_ofs, m_key);
+      return s;
+    }
+  } catch (const exception &e) {
+    // printf("DEBUG: Value::operator std::string_view exception: %s (key=%s,
+    // pofs=%zu)\n", e.what(), m_key.c_str(), m_parent_ofs);
+  }
+  return "";
+}
+
+Value::operator std::span<const std::byte>() const {
+  try {
+    if (m_is_array_element)
+      return m_buffer->arr_get_bytes(m_parent_ofs, m_index);
+    if (!m_key.empty())
+      return m_buffer->get_bytes(m_parent_ofs, m_key);
+  } catch (...) {
+  }
+  return {};
+}
+
+Value &Value::operator=(bool val) {
+  if (!m_key.empty())
+    m_buffer->set_bool(m_parent_ofs, m_key, val);
+  else if (m_is_array_element)
+    m_buffer->arr_append_bool(m_parent_ofs, val);
+  return *this;
+}
+
+Value &Value::operator=(int64_t val) {
+  if (!m_key.empty())
+    m_buffer->set_i64(m_parent_ofs, m_key, val);
+  else if (m_is_array_element)
+    m_buffer->arr_append_i64(m_parent_ofs, val);
+  return *this;
+}
+
+Value &Value::operator=(double val) {
+  if (!m_key.empty())
+    m_buffer->set_f64(m_parent_ofs, m_key, val);
+  else if (m_is_array_element)
+    m_buffer->arr_append_f64(m_parent_ofs, val);
+  return *this;
+}
+
+Value &Value::operator=(std::string_view val) {
+  if (!m_key.empty())
+    m_buffer->set_str(m_parent_ofs, m_key, val);
+  else if (m_is_array_element)
+    m_buffer->arr_append_str(m_parent_ofs, val);
+  return *this;
+}
+
+Value &Value::operator=(const char *val) {
+  return (*this) = std::string_view(val);
 }
 
 } // namespace lite3cpp

@@ -64,6 +64,18 @@ public:
     metric_call_count++;
     return true;
   }
+  bool increment_sync_ops(std::string_view) override {
+    metric_call_count++;
+    return true;
+  }
+  bool increment_keys_repaired() override {
+    metric_call_count++;
+    return true;
+  }
+  bool increment_mesh_bytes(std::string_view, size_t, bool) override {
+    metric_call_count++;
+    return true;
+  }
 };
 
 // Test fixture to reset global state
