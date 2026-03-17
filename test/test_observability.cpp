@@ -85,6 +85,11 @@ struct ObservabilityTest : public ::testing::Test {
     lite3cpp::set_logger(nullptr);
     lite3cpp::set_metrics(nullptr);
   }
+  void TearDown() override {
+    // Ensure globals are reset to null implementations after each test
+    lite3cpp::set_logger(nullptr);
+    lite3cpp::set_metrics(nullptr);
+  }
 };
 
 TEST_F(ObservabilityTest, LoggingMetricsInvocation) {

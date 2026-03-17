@@ -7,6 +7,7 @@
 #include <chrono>      // Add this
 #include <string_view> // Add this
 #include <vector>
+#include <cstring>
 
 
 namespace lite3cpp {

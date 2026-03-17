@@ -14,7 +14,7 @@ TEST(ModernAPITest, BasicObjectAssignment) {
   root["active"] = true;
 
   ASSERT_TRUE(root["name"] == "Jason");
-  ASSERT_TRUE(root["age"] == 30LL);
+  ASSERT_TRUE(root["age"] == int64_t(30));
   ASSERT_DOUBLE_EQ(static_cast<double>(root["pi"]), 3.14159);
   ASSERT_TRUE(root["active"] == true);
 }
@@ -51,7 +51,7 @@ TEST(ModernAPITest, ArrayWorkload) {
   root.push_back(100);
   root.push_back("hello");
 
-  ASSERT_TRUE(root[0] == 100LL);
+  ASSERT_TRUE(root[0] == int64_t(100));
   ASSERT_TRUE(root[1] == "hello");
 }
 
