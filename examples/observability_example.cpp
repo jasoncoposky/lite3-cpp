@@ -69,6 +69,20 @@ public:
     std::cout << "Metric: error " << status_code << std::endl;
     return true;
   }
+  bool increment_sync_ops(std::string_view type) override {
+    std::cout << "Metric: sync_op " << type << std::endl;
+    return true;
+  }
+  bool increment_keys_repaired() override {
+    std::cout << "Metric: keys_repaired 1" << std::endl;
+    return true;
+  }
+  bool increment_mesh_bytes(std::string_view lane, size_t bytes,
+                            bool is_send) override {
+    std::cout << "Metric: mesh_bytes " << lane << " " << bytes << " "
+              << (is_send ? "send" : "recv") << std::endl;
+    return true;
+  }
 };
 
 int main() {
