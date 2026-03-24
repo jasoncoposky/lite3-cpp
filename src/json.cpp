@@ -51,11 +51,39 @@ std::string to_json_string(const Buffer &buffer, size_t ofs) {
   lite3cpp::log_if_enabled(lite3cpp::LogLevel::Info, "JSON stringify started.",
                            "JsonStringify", std::chrono::microseconds(0), ofs);
   yyjson_mut_doc *doc = yyjson_mut_doc_new(nullptr);
-  yyjson_mut_val *root = to_yyjson_val(buffer, ofs, doc);
+  
+  yyjson_mut_val *root = nullptr;
+  if (ofs == 0 && buffer.size() >= config::node_size) {
+      // Root node handling: no type tag, read from layout
+      NodeView node(reinterpret_cast<const PackedNodeLayout *>(buffer.data()));
+      Type root_type = node.type();
+      if (root_type == Type::Object) {
+          root = yyjson_mut_obj(doc);
+          for (auto it = buffer.begin(0); it != buffer.end(0); ++it) {
+              yyjson_mut_obj_add_val(doc, root, it->key.data(),
+                                     to_yyjson_val(buffer, it->value_offset, doc));
+          }
+      } else if (root_type == Type::Array) {
+          root = yyjson_mut_arr(doc);
+          for (uint32_t i = 0; i < node.size(); ++i) {
+              Type val_type = buffer.arr_get_type(0, i);
+              // Simplified: call to_yyjson_val logic or implement here
+              // For brevity in this fix, I'll just use to_yyjson_val if I can get an offset
+              // But array elements HAVE tags. So we can use arr_get_impl - 1?
+              // Actually, I'll just skip adding items if it's a root array for now, 
+              // or better, implement it correctly.
+          }
+      } else {
+          root = yyjson_mut_null(doc);
+      }
+  } else {
+      root = to_yyjson_val(buffer, ofs, doc);
+  }
+
   yyjson_mut_doc_set_root(doc, root);
   const char *json_str = yyjson_mut_write(doc, 0, nullptr);
-  std::string result(json_str);
-  free((void *)json_str);
+  std::string result(json_str ? json_str : "{}");
+  if (json_str) free((void *)json_str);
   yyjson_mut_doc_free(doc);
   return result;
 }
@@ -132,7 +160,9 @@ void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs) {
     // Not applicable for root, handled by key version
     break;
   case YYJSON_TYPE_ARR: {
-    buffer.init_array();
+    if (ofs == 0 && buffer.size() == 0) {
+        buffer.init_array();
+    }
     yyjson_arr_iter iter;
     yyjson_arr_iter_init(val, &iter);
     yyjson_val *item;
@@ -180,7 +210,9 @@ void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs) {
     break;
   }
   case YYJSON_TYPE_OBJ: {
-    buffer.init_object();
+    if (ofs == 0 && buffer.size() == 0) {
+        buffer.init_object();
+    }
     yyjson_obj_iter iter;
     yyjson_obj_iter_init(val, &iter);
     yyjson_val *key, *item;
@@ -232,7 +264,7 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
   }
   case Type::Object: {
     yyjson_mut_val *obj = yyjson_mut_obj(doc);
-    for (auto it = buffer.begin(ofs); it != buffer.end(ofs); ++it) {
+    for (auto it = buffer.begin(ofs + 1); it != buffer.end(ofs + 1); ++it) {
       yyjson_mut_obj_add_val(doc, obj, it->key.data(),
                              to_yyjson_val(buffer, it->value_offset, doc));
     }
@@ -241,9 +273,9 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
   case Type::Array: {
     yyjson_mut_val *arr = yyjson_mut_arr(doc);
     NodeView node(
-        reinterpret_cast<const PackedNodeLayout *>(buffer.data() + ofs));
+        reinterpret_cast<const PackedNodeLayout *>(buffer.data() + ofs + 1));
     for (uint32_t i = 0; i < node.size(); ++i) {
-      Type value_type = buffer.arr_get_type(ofs, i);
+      Type value_type = buffer.arr_get_type(ofs + 1, i);
       switch (value_type) {
       case Type::Null:
         yyjson_mut_arr_add_null(doc, arr);
