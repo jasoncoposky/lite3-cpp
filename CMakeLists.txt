@@ -15,7 +15,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(gtest)
 
-add_library(lite3-cpp
+add_library(lite3-cpp STATIC
     src/buffer.cpp
     src/iterator.cpp
     src/json.cpp
