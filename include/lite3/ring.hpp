@@ -62,6 +62,16 @@ public:
 
   size_t size() const { return ring_.size(); }
 
+  std::vector<NodeID> get_all_node_ids() const {
+      std::vector<NodeID> ids;
+      for (const auto& [hash, id] : ring_) {
+          if (std::find(ids.begin(), ids.end(), id) == ids.end()) {
+              ids.push_back(id);
+          }
+      }
+      return ids;
+  }
+
 private:
   int replicas_;
   std::map<size_t, NodeID> ring_; // Hash -> NodeID

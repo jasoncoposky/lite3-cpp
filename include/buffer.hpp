@@ -67,6 +67,13 @@ public:
   void reserve(size_t capacity) { m_data.reserve(capacity); }
   size_t capacity() const { return m_data.capacity(); }
 
+  // Transfer ownership of internal data to a string for zero-copy async transfer
+  std::string move_to_string() {
+    std::string s(reinterpret_cast<char*>(m_data.data()), m_data.size());
+    m_data.clear();
+    return s;
+  }
+
   Iterator begin(size_t ofs) const;
   Iterator end(size_t ofs) const;
 
