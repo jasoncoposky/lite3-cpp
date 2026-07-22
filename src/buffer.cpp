@@ -210,11 +210,16 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       // Move keys [mid+1..end] to sibling
       int move_count = node.key_count() - (mid + 1);
 
-      sibling.set_child_offset(0, node.get_child_offset(mid + 1));
+      bool is_leaf = (node.get_child_offset(0) == 0);
+      if (!is_leaf) {
+        sibling.set_child_offset(0, node.get_child_offset(mid + 1));
+      }
       for (int j = 0; j < move_count; ++j) {
         sibling.set_hash(j, node.get_hash(mid + 1 + j));
         sibling.set_kv_offset(j, node.get_kv_offset(mid + 1 + j));
-        sibling.set_child_offset(j + 1, node.get_child_offset(mid + 2 + j));
+        if (!is_leaf) {
+          sibling.set_child_offset(j + 1, node.get_child_offset(mid + 2 + j));
+        }
       }
       sibling.set_size_kc(0, move_count);
       // sibling size needs recalc? Assume 0 for now.
@@ -232,6 +237,12 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       parent.set_size_kc(parent.size(), parent.key_count() + 1);
 
       node.set_key_count(mid);
+      if (is_leaf) {
+        for (size_t k = 0; k <= config::node_key_count; ++k) {
+          node.set_child_offset(k, 0);
+          sibling.set_child_offset(k, 0);
+        }
+      }
 
       // Update sizes if tracking...
 
@@ -350,7 +361,7 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       return m_used_size - val_total_len; // Return start of value?
     }
 
-    if (node.get_child_offset(i) != 0) {
+    if (node.get_child_offset(0) != 0 && node.get_child_offset(i) != 0) {
       parent_ofs = node_ofs;
       node_ofs = node.get_child_offset(i);
       continue;
@@ -453,7 +464,7 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
       type = static_cast<Type>(m_data[vo]);
       return reinterpret_cast<const std::byte *>(m_data.data() + vo + 1);
     }
-    if (node.get_child_offset(i)) {
+    if (node.get_child_offset(0) != 0 && node.get_child_offset(i) != 0) {
       // std::cout << "DEBUG: Descending child " << i << std::endl;
       node_ofs = node.get_child_offset(i);
       continue;
@@ -497,7 +508,7 @@ int64_t Buffer::get_i64(size_t ofs, std::string_view key) const {
   Type t;
   auto *p = get_impl(ofs, key, utils::djb2_hash(key), t);
   if (!p || t != Type::Int64)
-    throw exception("Type mismatch or not found");
+    return 0;
   int64_t v;
   std::memcpy(&v, p, 8);
   return v;
@@ -523,10 +534,8 @@ bool Buffer::get_bool(size_t ofs, std::string_view key) const {
 std::string_view Buffer::get_str(size_t ofs, std::string_view key) const {
   Type t;
   auto *p = get_impl(ofs, key, utils::djb2_hash(key), t);
-  if (!p)
-    throw exception("Key not found");
-  if (t != Type::String)
-    throw exception("Type mismatch");
+  if (!p || t != Type::String)
+    return "";
   uint32_t sz;
   std::memcpy(&sz, p, 4);
   return std::string_view(reinterpret_cast<const char *>(p + 4), sz);
