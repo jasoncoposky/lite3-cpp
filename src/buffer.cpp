@@ -11,7 +11,7 @@
 namespace lite3cpp {
 
 // Helper for B-tree comparison (Hash -> Key)
-static int compare_node_key(const uint8_t *base, const NodeView &node, int idx,
+static int compare_node_key(const uint8_t *base, size_t data_size, const NodeView &node, int idx,
                             uint32_t hash, std::string_view key, bool is_arr) {
   uint32_t nh = node.get_hash(idx);
   if (nh < hash) {
@@ -28,9 +28,12 @@ static int compare_node_key(const uint8_t *base, const NodeView &node, int idx,
     return 0; // Arrays use unique index as hash
 
   size_t vo = node.get_kv_offset(idx);
+  if (vo >= data_size) return -1;
   uint8_t tag = base[vo];
   uint32_t klen = tag >> 2;
+  if (klen == 0) return -1;
   size_t ksz = klen - 1;
+  if (vo + 1 + ksz > data_size) return -1;
 
   std::string_view existing(reinterpret_cast<const char *>(base + vo + 1), ksz);
   int cmp = existing.compare(key);
@@ -257,11 +260,11 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
     int count = node.key_count();
     // Binary search could be better, but linear for small nodes (size 128) is
     // fine
-    while (i < count && compare_node_key(m_data.data(), node, i, key_hash, key,
+    while (i < count && compare_node_key(m_data.data(), m_data.size(), node, i, key_hash, key,
                                          is_append) < 0)
       i++;
 
-    if (i < count && compare_node_key(m_data.data(), node, i, key_hash, key,
+    if (i < count && compare_node_key(m_data.data(), m_data.size(), node, i, key_hash, key,
                                       is_append) == 0) {
       // Calculate new size requirements early for both paths
       size_t klen = is_append ? 0 : (key.size() + key_tag_size + 1);
@@ -429,6 +432,11 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
   // std::cout << "DEBUG: get_impl key='" << key << "' hash=" << hash <<
   // std::endl;
   while (true) {
+    if (m_data.size() < sizeof(PackedNodeLayout) ||
+        node_ofs + sizeof(PackedNodeLayout) > m_data.size()) {
+      type = Type::Invalid;
+      return nullptr;
+    }
     NodeView node(
         reinterpret_cast<const PackedNodeLayout *>(m_data.data() + node_ofs));
     // Search
@@ -437,7 +445,7 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
     // std::cout << "DEBUG: Scanning node at ofs " << node_ofs
     //           << ", count=" << count << std::endl;
     while (i < count) {
-      int c = compare_node_key(m_data.data(), node, i, hash, key, is_array_op);
+      int c = compare_node_key(m_data.data(), m_data.size(), node, i, hash, key, is_array_op);
       if (c < 0) {
         // std::cout << "DEBUG: i=" << i << " compare < 0" << std::endl;
         i++;
@@ -450,17 +458,25 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
     }
 
     if (i < count &&
-        compare_node_key(m_data.data(), node, i, hash, key, is_array_op) == 0) {
+        compare_node_key(m_data.data(), m_data.size(), node, i, hash, key, is_array_op) == 0) {
       // std::cout << "DEBUG: Found match at index " << i << std::endl;
       size_t kv_ofs = node.get_kv_offset(i);
       // Skip key (since we confirmed match, we just skip it to get value)
       size_t vo = kv_ofs;
       if (!is_array_op) {
+        if (vo >= m_data.size()) {
+          type = Type::Invalid;
+          return nullptr;
+        }
         uint8_t tag = m_data[vo];
         uint32_t klen = (tag >> 2);
         vo += 1 + klen;
       }
 
+      if (vo >= m_data.size()) {
+        type = Type::Invalid;
+        return nullptr;
+      }
       type = static_cast<Type>(m_data[vo]);
       return reinterpret_cast<const std::byte *>(m_data.data() + vo + 1);
     }
@@ -755,20 +771,19 @@ size_t Buffer::get_arr(size_t ofs, std::string_view key) const {
 
 std::span<const std::byte> Buffer::get_bytes(size_t ofs,
                                              std::string_view key) const {
-  // Implementation using get_impl
   Type type;
-  const std::byte *ptr =
-      get_impl(ofs, key, 0 /* hash? */, type); // Hash? need to calculate?
-  // get_impl expects hash. But get_bytes(..., key) usually computes hash.
-  // Wait, get_impl signature: get_impl(size_t ofs, std::string_view key,
-  // uint32_t hash, Type &type, bool is_array_op) I should calculate hash.
   uint32_t hash = utils::djb2_hash(key);
-  ptr = get_impl(ofs, key, hash, type, false);
+  const std::byte *ptr = get_impl(ofs, key, hash, type, false);
 
   if (ptr && type == Type::Bytes) {
-    uint32_t size;
-    std::memcpy(&size, ptr, sizeof(uint32_t));
-    return {reinterpret_cast<const std::byte *>(ptr + sizeof(uint32_t)), size};
+    size_t offset = reinterpret_cast<const uint8_t *>(ptr) - m_data.data();
+    if (offset + sizeof(uint32_t) <= m_data.size()) {
+      uint32_t size;
+      std::memcpy(&size, ptr, sizeof(uint32_t));
+      if (offset + sizeof(uint32_t) + size <= m_data.size()) {
+        return {reinterpret_cast<const std::byte *>(ptr + sizeof(uint32_t)), size};
+      }
+    }
   }
   return {};
 }
