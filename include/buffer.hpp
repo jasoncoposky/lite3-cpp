@@ -66,6 +66,12 @@ public:
   size_t size() const { return m_used_size; }
   void reserve(size_t capacity) { m_data.reserve(capacity); }
   size_t capacity() const { return m_data.capacity(); }
+  void shrink_to_fit() {
+    if (m_data.size() > m_used_size) {
+      m_data.resize(m_used_size);
+    }
+    m_data.shrink_to_fit();
+  }
 
   // Transfer ownership of internal data to a string for zero-copy async transfer
   std::string move_to_string() {
