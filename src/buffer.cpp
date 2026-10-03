@@ -473,7 +473,7 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
         vo += 1 + klen;
       }
 
-      if (vo >= m_data.size()) {
+      if (vo + 1 >= m_data.size()) {
         type = Type::Invalid;
         return nullptr;
       }

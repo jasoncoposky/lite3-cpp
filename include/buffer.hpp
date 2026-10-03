@@ -63,14 +63,15 @@ public:
 
   // Access to raw data (read-only)
   const uint8_t *data() const { return m_data.data(); }
-  size_t size() const { return m_data.size(); }
+  size_t size() const { return m_used_size; }
   void reserve(size_t capacity) { m_data.reserve(capacity); }
   size_t capacity() const { return m_data.capacity(); }
 
   // Transfer ownership of internal data to a string for zero-copy async transfer
   std::string move_to_string() {
-    std::string s(reinterpret_cast<char*>(m_data.data()), m_data.size());
+    std::string s(reinterpret_cast<const char*>(m_data.data()), m_used_size);
     m_data.clear();
+    m_used_size = 0;
     return s;
   }
 
