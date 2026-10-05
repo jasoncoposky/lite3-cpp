@@ -115,8 +115,10 @@ void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs,
     buffer.set_bool(ofs, key, yyjson_get_bool(val));
     break;
   case YYJSON_TYPE_NUM:
-    if (yyjson_is_int(val)) {
-      buffer.set_i64(ofs, key, yyjson_get_int(val));
+    if (yyjson_is_uint(val)) {
+      buffer.set_i64(ofs, key, static_cast<int64_t>(yyjson_get_uint(val)));
+    } else if (yyjson_is_sint(val)) {
+      buffer.set_i64(ofs, key, yyjson_get_sint(val));
     } else {
       buffer.set_f64(ofs, key, yyjson_get_real(val));
     }
@@ -177,8 +179,10 @@ void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs) {
         buffer.arr_append_bool(ofs, yyjson_get_bool(item));
         break;
       case YYJSON_TYPE_NUM:
-        if (yyjson_is_int(item)) {
-          buffer.arr_append_i64(ofs, yyjson_get_int(item));
+        if (yyjson_is_uint(item)) {
+          buffer.arr_append_i64(ofs, static_cast<int64_t>(yyjson_get_uint(item)));
+        } else if (yyjson_is_sint(item)) {
+          buffer.arr_append_i64(ofs, yyjson_get_sint(item));
         } else {
           buffer.arr_append_f64(ofs, yyjson_get_real(item));
         }
