@@ -1,4 +1,4 @@
-﻿#include "buffer.hpp"
+#include "buffer.hpp"
 #include "exception.hpp" // Added
 #include "json.hpp"
 #include "observability.hpp"
@@ -315,3 +315,25 @@ TEST_F(BufferTest, PatchSidecar) {
   ASSERT_EQ(buffer.get_str(0, "sidecar_config"), "v1.1-patched");
   ASSERT_EQ(buffer.get_i64(0, "sidecar_id"), 101);
 }
+
+TEST_F(BufferTest, ExplicitStringAndNullSafety) {
+  // Verify Buffer(nullptr, 0) does not crash or trigger UB and has size() == 0
+  lite3cpp::Buffer null_buf(nullptr, 0);
+  EXPECT_EQ(null_buf.size(), 0);
+
+  std::string s_empty(null_buf);
+  EXPECT_EQ(s_empty, "");
+
+  // Verify explicit std::string conversion on valid buffer works as expected
+  buffer.init_object();
+  buffer.set_str(0, "greeting", "hello world");
+  buffer.set_i64(0, "count", 42);
+
+  std::string s(buffer);
+  EXPECT_FALSE(s.empty());
+  EXPECT_NE(s.find("greeting"), std::string::npos);
+  EXPECT_NE(s.find("hello world"), std::string::npos);
+  EXPECT_NE(s.find("count"), std::string::npos);
+  EXPECT_NE(s.find("42"), std::string::npos);
+}
+

@@ -79,8 +79,11 @@ Buffer::Buffer(size_t initial_size) : m_used_size(0) {
 Buffer::Buffer(std::vector<uint8_t> data)
     : m_data(std::move(data)), m_used_size(m_data.size()) {}
 
-Buffer::Buffer(const uint8_t *ptr, size_t len)
-    : m_data(ptr, ptr + len), m_used_size(len) {}
+Buffer::Buffer(const uint8_t *ptr, size_t len) : m_used_size(len) {
+  if (ptr && len > 0) {
+    m_data.assign(ptr, ptr + len);
+  }
+}
 
 Buffer::Buffer(std::string_view sv)
     : m_data(reinterpret_cast<const uint8_t *>(sv.data()),
@@ -792,10 +795,11 @@ std::span<const std::byte> Buffer::get_bytes(size_t ofs,
 
   if (ptr && type == Type::Bytes) {
     size_t offset = reinterpret_cast<const uint8_t *>(ptr) - m_data.data();
-    if (offset + sizeof(uint32_t) <= m_data.size()) {
+    size_t limit = (m_used_size > 0) ? m_used_size : m_data.size();
+    if (offset + sizeof(uint32_t) <= limit) {
       uint32_t size;
       std::memcpy(&size, ptr, sizeof(uint32_t));
-      if (offset + sizeof(uint32_t) + size <= m_data.size()) {
+      if (offset + sizeof(uint32_t) + size <= limit) {
         return {reinterpret_cast<const std::byte *>(ptr + sizeof(uint32_t)), size};
       }
     }
