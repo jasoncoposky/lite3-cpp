@@ -68,6 +68,7 @@ public:
   size_t size() const { return m_used_size; }
   void reserve(size_t capacity) { m_data.reserve(capacity); }
   size_t capacity() const { return m_data.capacity(); }
+  void ensure_capacity(size_t required_bytes);
   void shrink_to_fit() {
     if (m_data.size() > m_used_size) {
       m_data.resize(m_used_size);
@@ -103,10 +104,6 @@ private:
   size_t set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
                   size_t val_len, const void *val_ptr, Type type,
                   bool is_append = false);
-
-  // Helper to ensure buffer has enough space for additional bytes + alignment
-  // Returns pointer to current data (invalidated on resize)
-  void ensure_capacity(size_t required_bytes);
 
   // Splits a full child node
   void split_child(size_t parent_ofs, int index, size_t child_ofs);
