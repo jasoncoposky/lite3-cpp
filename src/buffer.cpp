@@ -749,7 +749,7 @@ Type Buffer::arr_get_type(size_t ofs, uint32_t index) const {
   return t;
 }
 Type Buffer::get_type(size_t ofs, std::string_view key) const {
-  Type t;
+  Type t = Type::Invalid;
   get_impl(ofs, key, utils::djb2_hash(key), t);
   return t;
 }
