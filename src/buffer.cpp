@@ -79,7 +79,8 @@ Buffer::Buffer(size_t initial_size) : m_used_size(0) {
 Buffer::Buffer(std::vector<uint8_t> data)
     : m_data(std::move(data)), m_used_size(m_data.size()) {}
 
-Buffer::Buffer(const uint8_t *ptr, size_t len) : m_used_size(len) {
+Buffer::Buffer(const uint8_t *ptr, size_t len)
+    : m_used_size((ptr && len > 0) ? len : 0) {
   if (ptr && len > 0) {
     m_data.assign(ptr, ptr + len);
   }
@@ -733,9 +734,16 @@ std::span<const std::byte> Buffer::arr_get_bytes(size_t ofs,
   auto *p = arr_get_impl(ofs, index, t);
   if (!p || t != Type::Bytes)
     throw exception("Type mismatch");
-  uint32_t sz;
-  std::memcpy(&sz, p, 4);
-  return {reinterpret_cast<const std::byte *>(p + 4), sz};
+  size_t offset = reinterpret_cast<const uint8_t *>(p) - m_data.data();
+  size_t limit = (m_used_size > 0) ? m_used_size : m_data.size();
+  if (offset + sizeof(uint32_t) <= limit) {
+    uint32_t sz;
+    std::memcpy(&sz, p, 4);
+    if (offset + sizeof(uint32_t) + sz <= limit) {
+      return {reinterpret_cast<const std::byte *>(p + 4), sz};
+    }
+  }
+  return {};
 }
 size_t Buffer::arr_get_obj(size_t ofs, uint32_t index) const {
   Type t;
