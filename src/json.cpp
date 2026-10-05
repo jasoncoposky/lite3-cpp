@@ -164,13 +164,7 @@ void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs,
     break;
   case YYJSON_TYPE_STR: {
     std::string_view str_val = yyjson_get_str(val);
-    try {
-      std::vector<std::byte> decoded_bytes = utils::hex_decode(str_val);
-      buffer.set_bytes(ofs, key, decoded_bytes);
-    } catch (const std::runtime_error &) {
-      // If hex_decode fails, treat it as a regular string
-      buffer.set_str(ofs, key, str_val);
-    }
+    buffer.set_str(ofs, key, str_val);
     break;
   }
   case YYJSON_TYPE_ARR: {
@@ -228,13 +222,7 @@ void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs) {
         break;
       case YYJSON_TYPE_STR: {
         std::string_view str_val = yyjson_get_str(item);
-        try {
-          std::vector<std::byte> decoded_bytes = utils::hex_decode(str_val);
-          buffer.arr_append_bytes(ofs, decoded_bytes);
-        } catch (const std::runtime_error &) {
-          // If hex_decode fails, treat it as a regular string
-          buffer.arr_append_str(ofs, str_val);
-        }
+        buffer.arr_append_str(ofs, str_val);
         break;
       }
       case YYJSON_TYPE_OBJ: { // Corrected: Using YYJSON_TYPE_OBJ
