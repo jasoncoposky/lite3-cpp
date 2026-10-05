@@ -68,11 +68,47 @@ std::string to_json_string(const Buffer &buffer, size_t ofs) {
           root = yyjson_mut_arr(doc);
           for (uint32_t i = 0; i < node.size(); ++i) {
               Type val_type = buffer.arr_get_type(0, i);
-              // Simplified: call to_yyjson_val logic or implement here
-              // For brevity in this fix, I'll just use to_yyjson_val if I can get an offset
-              // But array elements HAVE tags. So we can use arr_get_impl - 1?
-              // Actually, I'll just skip adding items if it's a root array for now, 
-              // or better, implement it correctly.
+              switch (val_type) {
+              case Type::Null:
+                yyjson_mut_arr_add_null(doc, root);
+                break;
+              case Type::Bool:
+                yyjson_mut_arr_add_bool(doc, root, buffer.arr_get_bool(0, i));
+                break;
+              case Type::Int64:
+                yyjson_mut_arr_add_int(doc, root, buffer.arr_get_i64(0, i));
+                break;
+              case Type::Float64:
+                yyjson_mut_arr_add_real(doc, root, buffer.arr_get_f64(0, i));
+                break;
+              case Type::String: {
+                auto str = buffer.arr_get_str(0, i);
+                yyjson_mut_arr_add_strncpy(doc, root, str.data(), str.size());
+                break;
+              }
+              case Type::Bytes: {
+                auto bytes_span = buffer.arr_get_bytes(0, i);
+                std::string hex_str;
+                for (size_t j = 0; j < bytes_span.size(); ++j) {
+                  char buf[3];
+                  snprintf(buf, sizeof(buf), "%02x",
+                           static_cast<unsigned char>(bytes_span[j]));
+                  hex_str += buf;
+                }
+                yyjson_mut_arr_add_str(doc, root, hex_str.c_str());
+                break;
+              }
+              case Type::Object:
+                yyjson_mut_arr_add_val(
+                    root, to_yyjson_val(buffer, buffer.arr_get_obj(0, i) - 1, doc));
+                break;
+              case Type::Array:
+                yyjson_mut_arr_add_val(
+                    root, to_yyjson_val(buffer, buffer.arr_get_arr(0, i) - 1, doc));
+                break;
+              default:
+                break;
+              }
           }
       } else {
           root = yyjson_mut_null(doc);
@@ -286,21 +322,21 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
         yyjson_mut_arr_add_null(doc, arr);
         break;
       case Type::Bool:
-        yyjson_mut_arr_add_bool(doc, arr, buffer.arr_get_bool(ofs, i));
+        yyjson_mut_arr_add_bool(doc, arr, buffer.arr_get_bool(ofs + 1, i));
         break;
       case Type::Int64:
-        yyjson_mut_arr_add_int(doc, arr, buffer.arr_get_i64(ofs, i));
+        yyjson_mut_arr_add_int(doc, arr, buffer.arr_get_i64(ofs + 1, i));
         break;
       case Type::Float64:
-        yyjson_mut_arr_add_real(doc, arr, buffer.arr_get_f64(ofs, i));
+        yyjson_mut_arr_add_real(doc, arr, buffer.arr_get_f64(ofs + 1, i));
         break;
       case Type::String: {
-        auto str = buffer.arr_get_str(ofs, i);
+        auto str = buffer.arr_get_str(ofs + 1, i);
         yyjson_mut_arr_add_strncpy(doc, arr, str.data(), str.size());
         break;
       }
       case Type::Bytes: {
-        auto bytes_span = buffer.arr_get_bytes(ofs, i);
+        auto bytes_span = buffer.arr_get_bytes(ofs + 1, i);
         std::string hex_str;
         for (size_t j = 0; j < bytes_span.size(); ++j) {
           char buf[3];
@@ -313,11 +349,11 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
       }
       case Type::Object:
         yyjson_mut_arr_add_val(
-            arr, to_yyjson_val(buffer, buffer.arr_get_obj(ofs, i), doc));
+            arr, to_yyjson_val(buffer, buffer.arr_get_obj(ofs + 1, i) - 1, doc));
         break;
       case Type::Array:
         yyjson_mut_arr_add_val(
-            arr, to_yyjson_val(buffer, buffer.arr_get_arr(ofs, i), doc));
+            arr, to_yyjson_val(buffer, buffer.arr_get_arr(ofs + 1, i) - 1, doc));
         break;
       default:
         break;

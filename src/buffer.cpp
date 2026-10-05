@@ -523,8 +523,10 @@ void Buffer::set_bytes(size_t ofs, std::string_view key,
 int64_t Buffer::get_i64(size_t ofs, std::string_view key) const {
   Type t;
   auto *p = get_impl(ofs, key, utils::djb2_hash(key), t);
-  if (!p || t != Type::Int64)
+  if (!p)
     return 0;
+  if (t != Type::Int64)
+    throw exception("Type mismatch");
   int64_t v;
   std::memcpy(&v, p, 8);
   return v;
