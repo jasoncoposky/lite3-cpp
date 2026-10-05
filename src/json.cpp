@@ -48,6 +48,9 @@ struct ScopedMetric {
 };
 
 std::string to_json_string(const Buffer &buffer, size_t ofs) {
+  if (buffer.size() == 0 || ofs >= buffer.size() || (ofs == 0 && buffer.size() < config::node_size)) {
+    return "{}";
+  }
   ScopedMetric sm("json_serialize");
   lite3cpp::log_if_enabled(lite3cpp::LogLevel::Info, "JSON stringify started.",
                            "JsonStringify", std::chrono::microseconds(0), ofs);

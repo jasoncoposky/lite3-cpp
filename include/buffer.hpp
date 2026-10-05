@@ -73,6 +73,11 @@ public:
     m_data.shrink_to_fit();
   }
 
+  void clear() {
+    m_data.clear();
+    m_used_size = 0;
+  }
+
   // Transfer ownership of internal data to a string for zero-copy async transfer
   std::string move_to_string() {
     std::string s(reinterpret_cast<const char*>(m_data.data()), m_used_size);
