@@ -79,6 +79,14 @@ Buffer::Buffer(size_t initial_size) : m_used_size(0) {
 Buffer::Buffer(std::vector<uint8_t> data)
     : m_data(std::move(data)), m_used_size(m_data.size()) {}
 
+Buffer::Buffer(const uint8_t *ptr, size_t len)
+    : m_data(ptr, ptr + len), m_used_size(len) {}
+
+Buffer::Buffer(std::string_view sv)
+    : m_data(reinterpret_cast<const uint8_t *>(sv.data()),
+             reinterpret_cast<const uint8_t *>(sv.data()) + sv.size()),
+      m_used_size(sv.size()) {}
+
 void Buffer::ensure_capacity(size_t required_bytes) {
   if (m_used_size + required_bytes > m_data.size()) {
     size_t new_size = std::max(m_data.size() * 2, m_used_size + required_bytes);

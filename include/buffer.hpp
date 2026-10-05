@@ -20,6 +20,8 @@ public:
   Buffer();
   explicit Buffer(size_t initial_size);
   explicit Buffer(std::vector<uint8_t> data);
+  Buffer(const uint8_t* ptr, size_t len);
+  explicit Buffer(std::string_view sv);
 
   void init_object();
   void init_array();
