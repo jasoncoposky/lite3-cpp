@@ -366,4 +366,12 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
   }
 }
 } // namespace lite3_json
+
+Buffer::operator std::string() const {
+  if (m_used_size < config::node_size) {
+    return "";
+  }
+  return lite3_json::to_json_string(*this, 0);
+}
+
 } // namespace lite3cpp

@@ -81,6 +81,9 @@ public:
     return s;
   }
 
+  // Implicit or explicit conversion to JSON string for string interoperability
+  operator std::string() const;
+
   Iterator begin(size_t ofs) const;
   Iterator end(size_t ofs) const;
 

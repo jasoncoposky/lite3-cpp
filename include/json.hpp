@@ -6,7 +6,7 @@
 
 namespace lite3cpp::lite3_json {
 
-    std::string to_json_string(const Buffer& buffer, size_t ofs);
+    std::string to_json_string(const Buffer& buffer, size_t ofs = 0);
     Buffer from_json_string(const std::string& json_str);
 
 } // namespace lite3cpp::lite3_json
