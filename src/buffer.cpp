@@ -89,7 +89,12 @@ Buffer::Buffer(std::string_view sv)
 
 void Buffer::ensure_capacity(size_t required_bytes) {
   if (m_used_size + required_bytes > m_data.size()) {
-    size_t new_size = std::max(m_data.size() * 2, m_used_size + required_bytes);
+    size_t target_cap = m_data.capacity();
+    size_t needed = m_used_size + required_bytes;
+    size_t new_size = std::max(m_data.size() * 2, needed);
+    if (new_size < target_cap && target_cap >= needed) {
+      new_size = target_cap;
+    }
     if (new_size < config::node_size)
       new_size = config::node_size;
     m_data.resize(new_size);
