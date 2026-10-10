@@ -267,12 +267,16 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
   case Type::Bool:
     return yyjson_mut_bool(
         doc, *reinterpret_cast<const bool *>(buffer.data() + ofs + 1));
-  case Type::Int64:
-    return yyjson_mut_int(
-        doc, *reinterpret_cast<const int64_t *>(buffer.data() + ofs + 1));
-  case Type::Float64:
-    return yyjson_mut_real(
-        doc, *reinterpret_cast<const double *>(buffer.data() + ofs + 1));
+  case Type::Int64: {
+    int64_t val;
+    std::memcpy(&val, buffer.data() + ofs + 1, sizeof(val));
+    return yyjson_mut_int(doc, val);
+  }
+  case Type::Float64: {
+    double val;
+    std::memcpy(&val, buffer.data() + ofs + 1, sizeof(val));
+    return yyjson_mut_real(doc, val);
+  }
   case Type::String: {
     uint32_t size;
     std::memcpy(&size, buffer.data() + ofs + 1, sizeof(size));

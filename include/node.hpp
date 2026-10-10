@@ -31,6 +31,7 @@ inline const size_t type_sizes[] = {
     0                                     // Invalid
 };
 
+#pragma pack(push, 1)
 struct PackedNodeLayout {
   uint32_t gen_type;
   uint32_t hashes[config::node_key_count];
@@ -38,6 +39,7 @@ struct PackedNodeLayout {
   uint32_t kv_ofs[config::node_key_count];
   uint32_t child_ofs[config::node_key_count + 1];
 };
+#pragma pack(pop)
 
 static_assert(sizeof(PackedNodeLayout) == config::node_size,
               "PackedNodeLayout size mismatch");
