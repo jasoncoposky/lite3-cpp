@@ -4,6 +4,7 @@
 #include "observability.hpp"
 #include "utils/hash.hpp"
 #include <gtest/gtest.h> // Include gtest header
+#include <cstring>
 #include <iostream>
 #include <stdexcept> // For std::runtime_error in tests
 #include <string>
@@ -416,5 +417,201 @@ TEST_F(BufferTest, LongKeys63BytesAnd200BytesRoundTripAndIterate) {
     ++count;
   }
   EXPECT_EQ(count, 4u);
+}
+
+TEST_F(BufferTest, FromViewReadsAndIteratesZeroCopyThenMaterializesOnWrite) {
+  lite3cpp::Buffer src;
+  src.init_object();
+  src.set_str(0, "objPath", "/tempZone/home/rods/zero_copy.bin");
+  src.set_i64(0, "dataSize", 1048576);
+  size_t sub = src.set_obj(0, "condInput");
+  src.set_str(sub, "write_chunk_size", "4194304");
+
+  const uint8_t* wire_ptr = src.data();
+  const size_t wire_len = src.size();
+
+  // Zero-copy view: pointer identity MUST equal wire_ptr and capacity() == 0
+  lite3cpp::Buffer view = lite3cpp::Buffer::from_view(wire_ptr, wire_len);
+  EXPECT_TRUE(view.is_view());
+  EXPECT_EQ(view.data(), wire_ptr);
+  EXPECT_EQ(view.size(), wire_len);
+  EXPECT_EQ(view.capacity(), 0u);
+  EXPECT_EQ(view.get_str(0, "objPath"), "/tempZone/home/rods/zero_copy.bin");
+  EXPECT_EQ(view.get_i64(0, "dataSize"), 1048576);
+  EXPECT_EQ(view.get_str(view.get_obj(0, "condInput"), "write_chunk_size"), "4194304");
+
+  // Also test std::span<const std::byte> overload
+  std::span<const std::byte> byte_span(reinterpret_cast<const std::byte*>(wire_ptr), wire_len);
+  lite3cpp::Buffer span_view = lite3cpp::Buffer::from_view(byte_span);
+  EXPECT_TRUE(span_view.is_view());
+  EXPECT_EQ(span_view.data(), wire_ptr);
+
+  // Copying a view Buffer MUST remain a zero-copy view (0 heap allocations)
+  lite3cpp::Buffer view_copy = view;
+  EXPECT_TRUE(view_copy.is_view());
+  EXPECT_EQ(view_copy.data(), wire_ptr);
+
+  // Iterating a view Buffer MUST work without materializing
+  size_t keys_seen = 0;
+  for (auto it = view_copy.begin(0); it != view_copy.end(0); ++it) {
+    EXPECT_FALSE(it.key().empty());
+    ++keys_seen;
+  }
+  EXPECT_EQ(keys_seen, 3u);
+  EXPECT_TRUE(view_copy.is_view());
+
+  // JSON conversion on a view Buffer MUST work without materializing
+  std::string as_json = static_cast<std::string>(view_copy);
+  EXPECT_NE(as_json.find("zero_copy.bin"), std::string::npos);
+  EXPECT_TRUE(view_copy.is_view());
+
+  // Mutating view_copy MUST Copy-on-Write materialize without mutating wire_ptr / src
+  view_copy.set_i64(0, "dataSize", 999);
+  EXPECT_FALSE(view_copy.is_view());
+  EXPECT_NE(view_copy.data(), wire_ptr);
+  EXPECT_EQ(view_copy.get_i64(0, "dataSize"), 999);
+  EXPECT_EQ(src.get_i64(0, "dataSize"), 1048576);
+}
+
+TEST_F(BufferTest, ReleaseTransfersVectorOwnershipZeroCopy) {
+  lite3cpp::Buffer buf;
+  buf.init_object();
+  buf.set_str(0, "payload", "owned_bytes");
+  const uint8_t* orig_ptr = buf.data();
+  const size_t orig_used = buf.size();
+
+  std::vector<uint8_t> out = buf.release();
+  EXPECT_EQ(out.data(), orig_ptr);
+  EXPECT_EQ(out.size(), orig_used);
+  EXPECT_EQ(buf.size(), 0u);
+  EXPECT_FALSE(buf.is_view());
+
+  // Release on a view Buffer copies once into a fresh vector and resets the view
+  lite3cpp::Buffer view = lite3cpp::Buffer::from_view(out.data(), out.size());
+  std::vector<uint8_t> view_out = view.release();
+  EXPECT_NE(view_out.data(), out.data());
+  EXPECT_EQ(view_out.size(), out.size());
+  EXPECT_EQ(std::memcmp(view_out.data(), out.data(), out.size()), 0);
+  EXPECT_FALSE(view.is_view());
+  EXPECT_EQ(view.size(), 0u);
+}
+
+TEST_F(BufferTest, FromViewEdgeCasesMoveAndAllMutatorsCoW) {
+  // Null / empty views stay safe empty non-views
+  lite3cpp::Buffer null_view = lite3cpp::Buffer::from_view(nullptr, 0);
+  EXPECT_FALSE(null_view.is_view());
+  EXPECT_EQ(null_view.size(), 0u);
+  EXPECT_EQ(null_view.begin(0), null_view.end(0));
+
+  lite3cpp::Buffer null_len_view = lite3cpp::Buffer::from_view(nullptr, 64);
+  EXPECT_FALSE(null_len_view.is_view());
+  EXPECT_EQ(null_len_view.size(), 0u);
+
+  const uint8_t dummy = 0;
+  lite3cpp::Buffer zero_len_view = lite3cpp::Buffer::from_view(&dummy, 0);
+  EXPECT_FALSE(zero_len_view.is_view());
+  EXPECT_EQ(zero_len_view.size(), 0u);
+
+  // Build rich source buffer with bytes, nested arrays, and nested objects
+  lite3cpp::Buffer src;
+  src.init_object();
+  const std::byte raw_bytes[] = {std::byte{0xDE}, std::byte{0xAD}, std::byte{0xBE}, std::byte{0xEF}};
+  src.set_bytes(0, "blob", raw_bytes);
+  size_t arr_ofs = src.set_arr(0, "items");
+  src.arr_append_i64(arr_ofs, 10);
+  src.arr_append_bytes(arr_ofs, raw_bytes);
+  size_t nested_obj = src.arr_append_obj(arr_ofs);
+  src.set_str(nested_obj, "tag", "nested");
+
+  const uint8_t* wire_ptr = src.data();
+  const size_t wire_len = src.size();
+
+  // Move constructor & move assignment preserve zero-copy view and reset source
+  lite3cpp::Buffer v1 = lite3cpp::Buffer::from_view(wire_ptr, wire_len);
+  lite3cpp::Buffer v2(std::move(v1));
+  EXPECT_FALSE(v1.is_view());
+  EXPECT_EQ(v1.size(), 0u);
+  EXPECT_TRUE(v2.is_view());
+  EXPECT_EQ(v2.data(), wire_ptr);
+  EXPECT_EQ(v2.size(), wire_len);
+
+  lite3cpp::Buffer v3;
+  v3 = std::move(v2);
+  EXPECT_FALSE(v2.is_view());
+  EXPECT_EQ(v2.size(), 0u);
+  EXPECT_TRUE(v3.is_view());
+  EXPECT_EQ(v3.data(), wire_ptr);
+
+  // Read bytes, nested array, nested object on view without materializing
+  auto got_blob = v3.get_bytes(0, "blob");
+  ASSERT_EQ(got_blob.size(), 4u);
+  EXPECT_EQ(got_blob[0], std::byte{0xDE});
+  size_t got_arr = v3.get_arr(0, "items");
+  EXPECT_EQ(v3.arr_get_i64(got_arr, 0), 10);
+  EXPECT_EQ(v3.arr_get_bytes(got_arr, 1).size(), 4u);
+  EXPECT_EQ(v3.get_str(v3.arr_get_obj(got_arr, 2), "tag"), "nested");
+  EXPECT_TRUE(v3.is_view());
+
+  // Iterator invalidation on CoW materialization
+  lite3cpp::Buffer v_iter = v3;
+  auto it = v_iter.begin(0);
+  ASSERT_NE(it, v_iter.end(0));
+  v_iter.set_str(0, "added", "after_iter");
+  EXPECT_FALSE(v_iter.is_view());
+  EXPECT_THROW({ (void)*it; }, lite3cpp::exception);
+
+  // CoW on arr_append_*, arr_append_obj, arr_append_arr
+  lite3cpp::Buffer arr_src;
+  arr_src.init_array();
+  arr_src.arr_append_i64(0, 1);
+  const uint8_t* arr_wire = arr_src.data();
+  const size_t arr_len = arr_src.size();
+
+  lite3cpp::Buffer av1 = lite3cpp::Buffer::from_view(arr_wire, arr_len);
+  av1.arr_append_i64(0, 2);
+  EXPECT_FALSE(av1.is_view());
+  EXPECT_NE(av1.data(), arr_wire);
+  EXPECT_EQ(av1.arr_get_i64(0, 1), 2);
+  EXPECT_THROW(arr_src.arr_get_i64(0, 1), lite3cpp::exception);
+
+  lite3cpp::Buffer av2 = lite3cpp::Buffer::from_view(arr_wire, arr_len);
+  size_t sub_obj = av2.arr_append_obj(0);
+  av2.set_i64(sub_obj, "x", 7);
+  EXPECT_FALSE(av2.is_view());
+  EXPECT_EQ(av2.get_i64(av2.arr_get_obj(0, 1), "x"), 7);
+
+  lite3cpp::Buffer av3 = lite3cpp::Buffer::from_view(arr_wire, arr_len);
+  size_t sub_arr = av3.arr_append_arr(0);
+  av3.arr_append_str(sub_arr, "elem");
+  EXPECT_FALSE(av3.is_view());
+  EXPECT_EQ(av3.arr_get_str(av3.arr_get_arr(0, 1), 0), "elem");
+
+  // CoW on reserve, ensure_capacity, shrink_to_fit, init_object, move_to_string
+  lite3cpp::Buffer vr = lite3cpp::Buffer::from_view(wire_ptr, wire_len);
+  vr.reserve(512);
+  EXPECT_FALSE(vr.is_view());
+  EXPECT_GE(vr.capacity(), 512u);
+  EXPECT_EQ(vr.get_bytes(0, "blob").size(), 4u);
+
+  lite3cpp::Buffer ve = lite3cpp::Buffer::from_view(wire_ptr, wire_len);
+  ve.ensure_capacity(64);
+  EXPECT_FALSE(ve.is_view());
+
+  lite3cpp::Buffer vs = lite3cpp::Buffer::from_view(wire_ptr, wire_len);
+  vs.shrink_to_fit();
+  EXPECT_FALSE(vs.is_view());
+
+  lite3cpp::Buffer vi = lite3cpp::Buffer::from_view(wire_ptr, wire_len);
+  vi.init_object();
+  EXPECT_FALSE(vi.is_view());
+  EXPECT_NE(vi.data(), wire_ptr);
+  EXPECT_EQ(vi.size(), lite3cpp::config::node_size);
+  EXPECT_EQ(src.get_bytes(0, "blob").size(), 4u);
+
+  lite3cpp::Buffer vm = lite3cpp::Buffer::from_view(wire_ptr, wire_len);
+  std::string moved_str = vm.move_to_string();
+  EXPECT_EQ(moved_str.size(), wire_len);
+  EXPECT_FALSE(vm.is_view());
+  EXPECT_EQ(vm.size(), 0u);
 }
 

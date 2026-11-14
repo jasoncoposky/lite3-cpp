@@ -17,11 +17,21 @@ namespace lite3cpp {
 
 class Buffer {
 public:
-  Buffer();
+  Buffer() noexcept;
   explicit Buffer(size_t initial_size);
   explicit Buffer(std::vector<uint8_t> data);
   Buffer(const uint8_t* ptr, size_t len);
   explicit Buffer(std::string_view sv);
+
+  Buffer(const Buffer&) = default;
+  Buffer& operator=(const Buffer&) = default;
+  Buffer(Buffer&& other) noexcept;
+  Buffer& operator=(Buffer&& other) noexcept;
+  ~Buffer() = default;
+
+  static Buffer from_view(const uint8_t* ptr, size_t len) noexcept;
+  static Buffer from_view(std::span<const std::byte> bytes) noexcept;
+  bool is_view() const noexcept { return m_ext_data != nullptr; }
 
   void init_object();
   void init_array();
@@ -64,28 +74,41 @@ public:
   Type get_type(size_t ofs, std::string_view key) const;
 
   // Access to raw data (read-only)
-  const uint8_t *data() const { return m_data.data(); }
-  size_t size() const { return m_used_size; }
-  void reserve(size_t capacity) { m_data.reserve(capacity); }
-  size_t capacity() const { return m_data.capacity(); }
+  const uint8_t *data() const noexcept {
+    return m_ext_data ? m_ext_data : m_data.data();
+  }
+  size_t size() const noexcept { return m_used_size; }
+  void reserve(size_t capacity) {
+    materialize_if_view();
+    m_data.reserve(capacity);
+  }
+  size_t capacity() const noexcept {
+    return m_ext_data ? 0 : m_data.capacity();
+  }
   void ensure_capacity(size_t required_bytes);
   void shrink_to_fit() {
+    materialize_if_view();
     if (m_data.size() > m_used_size) {
       m_data.resize(m_used_size);
     }
     m_data.shrink_to_fit();
   }
 
-  void clear() {
+  void clear() noexcept {
     m_data.clear();
+    m_ext_data = nullptr;
     m_used_size = 0;
   }
 
+  std::vector<uint8_t> release() noexcept;
+
   // Transfer ownership of internal data to a string for zero-copy async transfer
   std::string move_to_string() {
-    std::string s(reinterpret_cast<const char*>(m_data.data()), m_used_size);
-    m_data.clear();
-    m_used_size = 0;
+    std::string s =
+        (m_used_size > 0 && data() != nullptr)
+            ? std::string(reinterpret_cast<const char *>(data()), m_used_size)
+            : std::string();
+    clear();
     return s;
   }
 
@@ -118,8 +141,12 @@ private:
                             Type &type, bool is_array_op = false) const;
   const std::byte *arr_get_impl(size_t ofs, uint32_t index, Type &type) const;
 
-  std::vector<uint8_t> m_data; // The raw buffer
-  size_t m_used_size;          // Currently used bytes
+  size_t bound_size() const noexcept { return m_used_size; }
+  void materialize_if_view();
+
+  std::vector<uint8_t> m_data;          // The raw buffer
+  const uint8_t *m_ext_data = nullptr;  // External non-owning view pointer
+  size_t m_used_size = 0;               // Currently used bytes
 };
 
 } // namespace lite3cpp

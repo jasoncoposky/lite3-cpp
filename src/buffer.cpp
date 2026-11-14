@@ -73,19 +73,19 @@ struct ScopedMetric {
   }
 };
 
-Buffer::Buffer() : m_used_size(0) {
+Buffer::Buffer() noexcept : m_ext_data(nullptr), m_used_size(0) {
   // Default constructor
 }
 
-Buffer::Buffer(size_t initial_size) : m_used_size(0) {
+Buffer::Buffer(size_t initial_size) : m_ext_data(nullptr), m_used_size(0) {
   m_data.reserve(initial_size);
 }
 
 Buffer::Buffer(std::vector<uint8_t> data)
-    : m_data(std::move(data)), m_used_size(m_data.size()) {}
+    : m_data(std::move(data)), m_ext_data(nullptr), m_used_size(m_data.size()) {}
 
 Buffer::Buffer(const uint8_t *ptr, size_t len)
-    : m_used_size((ptr && len > 0) ? len : 0) {
+    : m_ext_data(nullptr), m_used_size((ptr && len > 0) ? len : 0) {
   if (ptr && len > 0) {
     m_data.assign(ptr, ptr + len);
   }
@@ -94,9 +94,67 @@ Buffer::Buffer(const uint8_t *ptr, size_t len)
 Buffer::Buffer(std::string_view sv)
     : m_data(reinterpret_cast<const uint8_t *>(sv.data()),
              reinterpret_cast<const uint8_t *>(sv.data()) + sv.size()),
+      m_ext_data(nullptr),
       m_used_size(sv.size()) {}
 
+Buffer::Buffer(Buffer &&other) noexcept
+    : m_data(std::move(other.m_data)),
+      m_ext_data(other.m_ext_data),
+      m_used_size(other.m_used_size) {
+  other.m_ext_data = nullptr;
+  other.m_used_size = 0;
+}
+
+Buffer &Buffer::operator=(Buffer &&other) noexcept {
+  if (this != &other) {
+    m_data = std::move(other.m_data);
+    m_ext_data = other.m_ext_data;
+    m_used_size = other.m_used_size;
+    other.m_ext_data = nullptr;
+    other.m_used_size = 0;
+  }
+  return *this;
+}
+
+Buffer Buffer::from_view(const uint8_t *ptr, size_t len) noexcept {
+  Buffer b;
+  if (ptr != nullptr && len > 0) {
+    b.m_ext_data = ptr;
+    b.m_used_size = len;
+  }
+  return b;
+}
+
+Buffer Buffer::from_view(std::span<const std::byte> bytes) noexcept {
+  return from_view(reinterpret_cast<const uint8_t *>(bytes.data()),
+                   bytes.size());
+}
+
+void Buffer::materialize_if_view() {
+  if (m_ext_data != nullptr) {
+    m_data.assign(m_ext_data, m_ext_data + m_used_size);
+    m_ext_data = nullptr;
+  }
+}
+
+std::vector<uint8_t> Buffer::release() noexcept {
+  if (m_ext_data != nullptr) {
+    std::vector<uint8_t> out(m_ext_data, m_ext_data + m_used_size);
+    m_ext_data = nullptr;
+    m_used_size = 0;
+    return out;
+  }
+  if (m_data.size() > m_used_size) {
+    m_data.resize(m_used_size);
+  }
+  std::vector<uint8_t> out = std::move(m_data);
+  m_data.clear();
+  m_used_size = 0;
+  return out;
+}
+
 void Buffer::ensure_capacity(size_t required_bytes) {
+  materialize_if_view();
   if (m_used_size + required_bytes > m_data.size()) {
     size_t target_cap = m_data.capacity();
     size_t needed = m_used_size + required_bytes;
@@ -111,6 +169,7 @@ void Buffer::ensure_capacity(size_t required_bytes) {
 }
 
 void Buffer::init_structure(Type type) {
+  m_ext_data = nullptr;
   m_used_size = 0;
   ensure_capacity(config::node_size);
   std::memset(m_data.data(), 0, config::node_size);
@@ -130,6 +189,7 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
                         size_t val_len, const void *val_ptr, Type type,
                         bool is_append) {
   ScopedMetric sm("set");
+  materialize_if_view();
 
   size_t key_tag_size = is_append ? 0 : key_tag_byte_count(key.size() + 1);
 
@@ -442,24 +502,26 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
                                   uint32_t hash, Type &type,
                                   bool is_array_op) const {
   ScopedMetric sm("get");
+  const uint8_t *base = data();
+  const size_t data_sz = bound_size();
   size_t node_ofs = ofs;
   // std::cout << "DEBUG: get_impl key='" << key << "' hash=" << hash <<
   // std::endl;
   while (true) {
-    if (m_data.size() < sizeof(PackedNodeLayout) ||
-        node_ofs + sizeof(PackedNodeLayout) > m_data.size()) {
+    if (base == nullptr || data_sz < sizeof(PackedNodeLayout) ||
+        node_ofs > data_sz - sizeof(PackedNodeLayout)) {
       type = Type::Invalid;
       return nullptr;
     }
     NodeView node(
-        reinterpret_cast<const PackedNodeLayout *>(m_data.data() + node_ofs));
+        reinterpret_cast<const PackedNodeLayout *>(base + node_ofs));
     // Search
     int i = 0;
     int count = node.key_count();
     // std::cout << "DEBUG: Scanning node at ofs " << node_ofs
     //           << ", count=" << count << std::endl;
     while (i < count) {
-      int c = compare_node_key(m_data.data(), m_data.size(), node, i, hash, key, is_array_op);
+      int c = compare_node_key(base, data_sz, node, i, hash, key, is_array_op);
       if (c < 0) {
         // std::cout << "DEBUG: i=" << i << " compare < 0" << std::endl;
         i++;
@@ -472,7 +534,7 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
     }
 
     if (i < count &&
-        compare_node_key(m_data.data(), m_data.size(), node, i, hash, key, is_array_op) == 0) {
+        compare_node_key(base, data_sz, node, i, hash, key, is_array_op) == 0) {
       // std::cout << "DEBUG: Found match at index " << i << std::endl;
       size_t kv_ofs = node.get_kv_offset(i);
       // Skip key (since we confirmed match, we just skip it to get value)
@@ -480,19 +542,19 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
       if (!is_array_op) {
         uint32_t klen = 0;
         size_t tag_bytes = 0;
-        if (!decode_key_tag(m_data.data(), m_data.size(), vo, klen, tag_bytes)) {
+        if (!decode_key_tag(base, data_sz, vo, klen, tag_bytes)) {
           type = Type::Invalid;
           return nullptr;
         }
         vo += tag_bytes + klen;
       }
 
-      if (vo >= m_data.size()) {
+      if (vo >= data_sz) {
         type = Type::Invalid;
         return nullptr;
       }
-      type = static_cast<Type>(m_data[vo]);
-      return reinterpret_cast<const std::byte *>(m_data.data() + vo + 1);
+      type = static_cast<Type>(base[vo]);
+      return reinterpret_cast<const std::byte *>(base + vo + 1);
     }
     if (node.get_child_offset(0) != 0 && node.get_child_offset(i) != 0) {
       // std::cout << "DEBUG: Descending child " << i << std::endl;
@@ -592,6 +654,7 @@ size_t Buffer::set_arr(size_t ofs, std::string_view key) {
 // Array appends - stub or implement
 void Buffer::arr_append_impl(size_t ofs, size_t val_len, const void *val_ptr,
                              Type type) {
+  materialize_if_view();
   // We need size only to calculate idx
   size_t current_size =
       NodeView(reinterpret_cast<const PackedNodeLayout *>(m_data.data() + ofs))
@@ -628,6 +691,7 @@ void Buffer::arr_append_bytes(size_t ofs, std::span<const std::byte> v) {
   arr_append_impl(ofs, v.size(), v.data(), Type::Bytes);
 }
 size_t Buffer::arr_append_obj(size_t ofs) {
+  materialize_if_view();
   size_t idx =
       NodeView(reinterpret_cast<const PackedNodeLayout *>(m_data.data() + ofs))
           .size();
@@ -649,6 +713,7 @@ size_t Buffer::arr_append_obj(size_t ofs) {
   return pos;
 }
 size_t Buffer::arr_append_arr(size_t ofs) {
+  materialize_if_view();
   size_t idx =
       NodeView(reinterpret_cast<const PackedNodeLayout *>(m_data.data() + ofs))
           .size();
@@ -717,8 +782,8 @@ std::span<const std::byte> Buffer::arr_get_bytes(size_t ofs,
   auto *p = arr_get_impl(ofs, index, t);
   if (!p || t != Type::Bytes)
     throw exception("Type mismatch");
-  size_t offset = reinterpret_cast<const uint8_t *>(p) - m_data.data();
-  size_t limit = (m_used_size > 0) ? m_used_size : m_data.size();
+  size_t offset = static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  size_t limit = bound_size();
   if (offset + sizeof(uint32_t) <= limit) {
     uint32_t sz;
     std::memcpy(&sz, p, 4);
@@ -738,17 +803,15 @@ size_t Buffer::arr_get_obj(size_t ofs, uint32_t index) const {
   // (skipping type). line 312: `return m_data.data() + vo + 1;` (after
   // type) So p points to Node data start? If Type is Object, value content
   // IS the Node structure (or nested structure). Yes. So offset of node is
-  // p - m_data.data().
-  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) -
-                             m_data.data());
+  // p - data().
+  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
 }
 size_t Buffer::arr_get_arr(size_t ofs, uint32_t index) const {
   Type t;
   auto *p = arr_get_impl(ofs, index, t);
   if (!p || t != Type::Array)
     throw exception("Type mismatch");
-  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) -
-                             m_data.data());
+  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
 }
 Type Buffer::arr_get_type(size_t ofs, uint32_t index) const {
   Type t = Type::Null;
@@ -766,16 +829,14 @@ size_t Buffer::get_obj(size_t ofs, std::string_view key) const {
   auto *p = get_impl(ofs, key, utils::djb2_hash(key), t);
   if (!p || t != Type::Object)
     throw exception("Type mismatch");
-  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) -
-                             m_data.data());
+  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
 }
 size_t Buffer::get_arr(size_t ofs, std::string_view key) const {
   Type t;
   auto *p = get_impl(ofs, key, utils::djb2_hash(key), t);
   if (!p || t != Type::Array)
     throw exception("Type mismatch");
-  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) -
-                             m_data.data());
+  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
 }
 
 std::span<const std::byte> Buffer::get_bytes(size_t ofs,
@@ -785,8 +846,9 @@ std::span<const std::byte> Buffer::get_bytes(size_t ofs,
   const std::byte *ptr = get_impl(ofs, key, hash, type, false);
 
   if (ptr && type == Type::Bytes) {
-    size_t offset = reinterpret_cast<const uint8_t *>(ptr) - m_data.data();
-    size_t limit = (m_used_size > 0) ? m_used_size : m_data.size();
+    size_t offset =
+        static_cast<size_t>(reinterpret_cast<const uint8_t *>(ptr) - data());
+    size_t limit = bound_size();
     if (offset + sizeof(uint32_t) <= limit) {
       uint32_t size;
       std::memcpy(&size, ptr, sizeof(uint32_t));
@@ -799,13 +861,13 @@ std::span<const std::byte> Buffer::get_bytes(size_t ofs,
 }
 
 Iterator Buffer::begin(size_t ofs) const {
-  if (m_data.empty())
+  if (bound_size() < sizeof(PackedNodeLayout) || data() == nullptr)
     return Iterator(nullptr, 0, 0, 0);
   // Read generation from root (offset 0)
   // Note: This assumes root is at 0. If 'ofs' is a subtree, generation
   // check should still refer to buffer version? Assuming root node
   // generation tracks buffer modification.
-  NodeView root(reinterpret_cast<const PackedNodeLayout *>(m_data.data()));
+  NodeView root(reinterpret_cast<const PackedNodeLayout *>(data()));
   return Iterator(this, 0, ofs, root.generation());
 }
 Iterator Buffer::end(size_t) const { return Iterator(nullptr, 0, 0, 0); }
