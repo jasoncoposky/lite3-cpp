@@ -17,7 +17,7 @@ namespace lite3cpp {
 
 class Buffer {
 public:
-  Buffer() noexcept;
+  Buffer() noexcept = default;
   explicit Buffer(size_t initial_size);
   explicit Buffer(std::vector<uint8_t> data);
   Buffer(const uint8_t* ptr, size_t len);
@@ -29,8 +29,18 @@ public:
   Buffer& operator=(Buffer&& other) noexcept;
   ~Buffer() = default;
 
-  static Buffer from_view(const uint8_t* ptr, size_t len) noexcept;
-  static Buffer from_view(std::span<const std::byte> bytes) noexcept;
+  static Buffer from_view(const uint8_t* ptr, size_t len) noexcept {
+    Buffer b;
+    if (ptr != nullptr && len > 0) {
+      b.m_ext_data = ptr;
+      b.m_used_size = len;
+    }
+    return b;
+  }
+  static Buffer from_view(std::span<const std::byte> bytes) noexcept {
+    return from_view(reinterpret_cast<const uint8_t*>(bytes.data()),
+                     bytes.size());
+  }
   bool is_view() const noexcept { return m_ext_data != nullptr; }
 
   void init_object();
@@ -100,7 +110,7 @@ public:
     m_used_size = 0;
   }
 
-  std::vector<uint8_t> release() noexcept;
+  std::vector<uint8_t> release();
 
   // Transfer ownership of internal data to a string for zero-copy async transfer
   std::string move_to_string() {

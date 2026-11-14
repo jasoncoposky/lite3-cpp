@@ -73,10 +73,6 @@ struct ScopedMetric {
   }
 };
 
-Buffer::Buffer() noexcept : m_ext_data(nullptr), m_used_size(0) {
-  // Default constructor
-}
-
 Buffer::Buffer(size_t initial_size) : m_ext_data(nullptr), m_used_size(0) {
   m_data.reserve(initial_size);
 }
@@ -116,20 +112,6 @@ Buffer &Buffer::operator=(Buffer &&other) noexcept {
   return *this;
 }
 
-Buffer Buffer::from_view(const uint8_t *ptr, size_t len) noexcept {
-  Buffer b;
-  if (ptr != nullptr && len > 0) {
-    b.m_ext_data = ptr;
-    b.m_used_size = len;
-  }
-  return b;
-}
-
-Buffer Buffer::from_view(std::span<const std::byte> bytes) noexcept {
-  return from_view(reinterpret_cast<const uint8_t *>(bytes.data()),
-                   bytes.size());
-}
-
 void Buffer::materialize_if_view() {
   if (m_ext_data != nullptr) {
     m_data.assign(m_ext_data, m_ext_data + m_used_size);
@@ -137,9 +119,10 @@ void Buffer::materialize_if_view() {
   }
 }
 
-std::vector<uint8_t> Buffer::release() noexcept {
+std::vector<uint8_t> Buffer::release() {
   if (m_ext_data != nullptr) {
     std::vector<uint8_t> out(m_ext_data, m_ext_data + m_used_size);
+    m_data.clear();
     m_ext_data = nullptr;
     m_used_size = 0;
     return out;
