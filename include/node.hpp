@@ -21,15 +21,15 @@ enum class Type : uint8_t {
 };
 
 inline const size_t type_sizes[] = {
-    0,                                    // Null
-    1,                                    // Bool
-    8,                                    // Int64
-    8,                                    // Float64
-    4,                                    // Bytes
-    4,                                    // String
-    config::node_size - sizeof(uint64_t), // Object
-    config::node_size - sizeof(uint64_t), // Array
-    0                                     // Invalid
+    0,                 // Null
+    1,                 // Bool
+    8,                 // Int64
+    8,                 // Float64
+    4,                 // Bytes
+    4,                 // String
+    config::node_size, // Object
+    config::node_size, // Array
+    0                  // Invalid
 };
 
 class NodeView {

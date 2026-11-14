@@ -21,7 +21,7 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
                               yyjson_mut_doc *doc);
 
 struct ScopedMetric {
-  std::string_view op;
+  [[maybe_unused]] std::string_view op;
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
   IMetrics *metrics = nullptr;
   std::chrono::high_resolution_clock::time_point start{};
@@ -30,6 +30,7 @@ struct ScopedMetric {
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
     IMetrics *m = lite3cpp::g_metrics.load(std::memory_order_relaxed);
     if (m != nullptr) [[unlikely]] {
+      std::atomic_thread_fence(std::memory_order_acquire);
       metrics = m;
       start = std::chrono::high_resolution_clock::now();
     }

@@ -81,16 +81,18 @@ inline void set_metrics(IMetrics *) {}
 inline void set_log_level_threshold(LogLevel) {}
 #endif
 
-template <typename... Args>
-inline bool log_if_enabled(LogLevel level, std::string_view message,
-                           std::string_view operation,
-                           std::chrono::microseconds duration,
-                           size_t buffer_offset, std::string_view key = "") {
+inline bool log_if_enabled([[maybe_unused]] LogLevel level,
+                           [[maybe_unused]] std::string_view message,
+                           [[maybe_unused]] std::string_view operation,
+                           [[maybe_unused]] std::chrono::microseconds duration,
+                           [[maybe_unused]] size_t buffer_offset,
+                           [[maybe_unused]] std::string_view key = "") {
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
   ILogger *logger = g_logger.load(std::memory_order_relaxed);
   if (logger == nullptr) [[likely]] {
     return true;
   }
+  std::atomic_thread_fence(std::memory_order_acquire);
   if (level >= g_log_level_threshold.load(std::memory_order_acquire)) {
     return logger->log(level, message, operation, duration, buffer_offset, key);
   }

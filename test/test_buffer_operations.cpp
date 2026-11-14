@@ -174,6 +174,7 @@ TEST_F(BufferTest, IteratorGenerationalSafety) {
   buffer.set_i64(0, "key3", 3);
 
   ASSERT_THROW({ auto val = *it; }, lite3cpp::exception);
+  ASSERT_THROW({ (void)it.key(); }, lite3cpp::exception);
 }
 
 TEST_F(BufferTest, ArrayOptimizedIndexingBasic) {

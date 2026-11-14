@@ -43,7 +43,7 @@ static int compare_node_key(const uint8_t *base, size_t data_size, const NodeVie
 }
 
 struct ScopedMetric {
-  std::string_view op;
+  [[maybe_unused]] std::string_view op;
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
   IMetrics *metrics = nullptr;
   std::chrono::high_resolution_clock::time_point start{};
@@ -52,6 +52,7 @@ struct ScopedMetric {
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
     IMetrics *m = g_metrics.load(std::memory_order_relaxed);
     if (m != nullptr) [[unlikely]] {
+      std::atomic_thread_fence(std::memory_order_acquire);
       metrics = m;
       start = std::chrono::high_resolution_clock::now();
     }

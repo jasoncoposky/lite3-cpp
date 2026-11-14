@@ -26,7 +26,7 @@ namespace lite3cpp {
 
         const value_type& operator*() const;
         const value_type* operator->() const;
-        std::string_view key() const noexcept { return m_current_value.key; }
+        std::string_view key() const;
 
         bool operator==(const Iterator& other) const;
         bool operator!=(const Iterator& other) const;

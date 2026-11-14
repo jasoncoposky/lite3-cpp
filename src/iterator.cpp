@@ -51,6 +51,8 @@ const Iterator::value_type *Iterator::operator->() const {
   return &m_current_value;
 }
 
+std::string_view Iterator::key() const { return (**this).key; }
+
 bool Iterator::operator==(const Iterator &other) const {
   if (!m_buffer && !other.m_buffer)
     return true;
