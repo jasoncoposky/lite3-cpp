@@ -379,10 +379,10 @@ TEST_F(BufferTest, NewObjectAndArrayNodesZeroEntire96ByteAlignedRegion) {
   const auto* nested_obj_layout = reinterpret_cast<const lite3cpp::PackedNodeLayout*>(buf.data() + nested_obj);
   const auto* nested_arr_layout = reinterpret_cast<const lite3cpp::PackedNodeLayout*>(buf.data() + nested_arr);
   for (size_t i = 0; i <= lite3cpp::config::node_key_count; ++i) {
-    EXPECT_EQ(obj_layout->child_offsets[i], 0u);
-    EXPECT_EQ(arr_layout->child_offsets[i], 0u);
-    EXPECT_EQ(nested_obj_layout->child_offsets[i], 0u);
-    EXPECT_EQ(nested_arr_layout->child_offsets[i], 0u);
+    EXPECT_EQ(uint32_t{obj_layout->child_offsets[i]}, 0u);
+    EXPECT_EQ(uint32_t{arr_layout->child_offsets[i]}, 0u);
+    EXPECT_EQ(uint32_t{nested_obj_layout->child_offsets[i]}, 0u);
+    EXPECT_EQ(uint32_t{nested_arr_layout->child_offsets[i]}, 0u);
   }
 }
 
@@ -613,5 +613,186 @@ TEST_F(BufferTest, FromViewEdgeCasesMoveAndAllMutatorsCoW) {
   EXPECT_EQ(moved_str.size(), wire_len);
   EXPECT_FALSE(vm.is_view());
   EXPECT_EQ(vm.size(), 0u);
+}
+
+TEST_F(BufferTest, FromViewCopyAssignSelfAssignAndCoWBTreeSplit) {
+  lite3cpp::Buffer src;
+  src.init_object();
+  for (int i = 0; i < 6; ++i) {
+    src.set_i64(0, "init_" + std::to_string(i), i * 10);
+  }
+  const uint8_t* wire_ptr = src.data();
+  const size_t wire_len = src.size();
+
+  // Copy-assigning a view onto a populated owned Buffer transitions it to a view
+  lite3cpp::Buffer owned;
+  owned.init_object();
+  owned.set_str(0, "owned_key", "owned_payload_value");
+  EXPECT_FALSE(owned.is_view());
+
+  lite3cpp::Buffer view = lite3cpp::Buffer::from_view(wire_ptr, wire_len);
+  owned = view;
+  EXPECT_TRUE(owned.is_view());
+  EXPECT_EQ(owned.data(), wire_ptr);
+  EXPECT_EQ(owned.size(), wire_len);
+  EXPECT_EQ(owned.capacity(), 0u);
+  EXPECT_EQ(owned.get_i64(0, "init_5"), 50);
+
+  // Self copy-assignment and self move-assignment preserve the view
+  lite3cpp::Buffer& view_ref = view;
+  view = view_ref;
+  EXPECT_TRUE(view.is_view());
+  EXPECT_EQ(view.data(), wire_ptr);
+  EXPECT_EQ(view.size(), wire_len);
+
+  view = std::move(view_ref);
+  EXPECT_TRUE(view.is_view());
+  EXPECT_EQ(view.data(), wire_ptr);
+  EXPECT_EQ(view.size(), wire_len);
+
+  // B-tree node splits (> 7 keys) during CoW mutation without mutating src
+  for (int i = 0; i < 16; ++i) {
+    owned.set_i64(0, "split_key_" + std::to_string(i), 1000 + i);
+  }
+  EXPECT_FALSE(owned.is_view());
+  EXPECT_NE(owned.data(), wire_ptr);
+  for (int i = 0; i < 6; ++i) {
+    EXPECT_EQ(owned.get_i64(0, "init_" + std::to_string(i)), i * 10);
+    EXPECT_EQ(src.get_i64(0, "init_" + std::to_string(i)), i * 10);
+  }
+  for (int i = 0; i < 16; ++i) {
+    EXPECT_EQ(owned.get_i64(0, "split_key_" + std::to_string(i)), 1000 + i);
+    EXPECT_EQ(src.get_type(0, "split_key_" + std::to_string(i)), lite3cpp::Type::Invalid);
+  }
+}
+
+TEST_F(BufferTest, SelfAliasingWritesAcrossCoWReallocationAndInPlaceOverwrite) {
+  const std::string long_path(320, 'p');
+  lite3cpp::Buffer src;
+  src.init_object();
+  src.set_str(0, "objPath", long_path);
+  src.set_str(0, "dynKeyName", "aliased_target_key");
+
+  lite3cpp::Buffer view = lite3cpp::Buffer::from_view(src.data(), src.size());
+
+  // 1. First CoW write aliasing external view memory
+  view.set_str(0, "dup", view.get_str(0, "objPath"));
+  EXPECT_FALSE(view.is_view());
+  EXPECT_EQ(view.get_str(0, "dup"), long_path);
+
+  // 2. Force tight capacity so the next self-aliased write MUST reallocate m_data
+  view.shrink_to_fit();
+  const uint8_t* before_realloc = view.data();
+  view.set_str(0, "dup2", view.get_str(0, "dup"));
+  EXPECT_NE(view.data(), before_realloc);
+  EXPECT_EQ(view.get_str(0, "dup2"), long_path);
+
+  // 3. Both key and value aliasing owned m_data across reallocation + B-tree split
+  for (int i = 0; i < 8; ++i) {
+    view.shrink_to_fit();
+    std::string k = "fill_" + std::to_string(i);
+    view.set_str(0, k, view.get_str(0, "dup2"));
+  }
+  view.shrink_to_fit();
+  view.set_str(0, view.get_str(0, "dynKeyName"), view.get_str(0, "dup2"));
+  EXPECT_EQ(view.get_str(0, "aliased_target_key"), long_path);
+
+  // 4. In-place self-overwrite (dst == val_ptr)
+  view.set_str(0, "dup", view.get_str(0, "dup"));
+  EXPECT_EQ(view.get_str(0, "dup"), long_path);
+}
+
+TEST_F(BufferTest, MalformedAndTruncatedViewsThrowCleanlyWithoutMemoryCorruption) {
+  lite3cpp::Buffer valid;
+  valid.init_object();
+  valid.set_str(0, "strKey", "abcdefghij");
+  valid.set_i64(0, "intKey", 42);
+  valid.set_f64(0, "fltKey", 3.5);
+  valid.set_bool(0, "boolKey", true);
+  size_t child = valid.set_obj(0, "subObj");
+  valid.set_i64(child, "x", 1);
+
+  const uint8_t* wire = valid.data();
+  const size_t wire_len = valid.size();
+
+  // Empty / null view mutations must throw without dereferencing null
+  EXPECT_THROW(lite3cpp::Buffer::from_view(nullptr, 0).set_i64(0, "k", 1), lite3cpp::exception);
+  EXPECT_THROW(lite3cpp::Buffer::from_view(nullptr, 0).arr_append_i64(0, 1), lite3cpp::exception);
+  EXPECT_THROW(lite3cpp::Buffer::from_view(nullptr, 0).arr_append_obj(0), lite3cpp::exception);
+  EXPECT_THROW(lite3cpp::Buffer::from_view(nullptr, 0).arr_append_arr(0), lite3cpp::exception);
+
+  // 16-byte truncated view mutation must throw
+  EXPECT_THROW(lite3cpp::Buffer::from_view(wire, 16).set_i64(0, "k", 1), lite3cpp::exception);
+
+  // Out-of-bounds offset and array append on Object view must throw before materializing
+  lite3cpp::Buffer oob_view = lite3cpp::Buffer::from_view(wire, wire_len);
+  EXPECT_THROW(oob_view.set_i64(wire_len, "k", 1), lite3cpp::exception);
+  EXPECT_TRUE(oob_view.is_view());
+  EXPECT_THROW(oob_view.arr_append_i64(0, 1), lite3cpp::exception);
+  EXPECT_TRUE(oob_view.is_view());
+
+  // Truncated string payload in view
+  {
+    lite3cpp::Buffer sbuf;
+    sbuf.init_object();
+    sbuf.set_str(0, "s", "0123456789");
+    // Truncate 5 bytes off the end of the string payload
+    lite3cpp::Buffer trunc_str = lite3cpp::Buffer::from_view(sbuf.data(), sbuf.size() - 5);
+    EXPECT_THROW((void)trunc_str.get_str(0, "s"), lite3cpp::exception);
+    EXPECT_THROW((void)static_cast<std::string>(trunc_str), lite3cpp::exception);
+    // Truncate inside the 4-byte string length field
+    lite3cpp::Buffer trunc_len = lite3cpp::Buffer::from_view(sbuf.data(), sbuf.size() - 13);
+    EXPECT_THROW((void)trunc_len.get_str(0, "s"), lite3cpp::exception);
+  }
+
+  // Truncated i64, f64, bool, and nested obj payloads in view
+  {
+    lite3cpp::Buffer ibuf;
+    ibuf.init_object();
+    ibuf.set_i64(0, "n", 123456789);
+    lite3cpp::Buffer trunc_i64 = lite3cpp::Buffer::from_view(ibuf.data(), ibuf.size() - 3);
+    EXPECT_THROW((void)trunc_i64.get_i64(0, "n"), lite3cpp::exception);
+    EXPECT_THROW(trunc_i64.set_i64(0, "n", 999), lite3cpp::exception);
+
+    lite3cpp::Buffer fbuf;
+    fbuf.init_object();
+    fbuf.set_f64(0, "f", 1.25);
+    lite3cpp::Buffer trunc_f64 = lite3cpp::Buffer::from_view(fbuf.data(), fbuf.size() - 4);
+    EXPECT_THROW((void)trunc_f64.get_f64(0, "f"), lite3cpp::exception);
+
+    lite3cpp::Buffer bbuf;
+    bbuf.init_object();
+    bbuf.set_bool(0, "b", true);
+    lite3cpp::Buffer trunc_bool = lite3cpp::Buffer::from_view(bbuf.data(), bbuf.size() - 1);
+    EXPECT_THROW((void)trunc_bool.get_bool(0, "b"), lite3cpp::exception);
+
+    lite3cpp::Buffer obuf;
+    obuf.init_object();
+    (void)obuf.set_obj(0, "o");
+    lite3cpp::Buffer trunc_obj = lite3cpp::Buffer::from_view(obuf.data(), obuf.size() - 10);
+    EXPECT_THROW((void)trunc_obj.get_obj(0, "o"), lite3cpp::exception);
+  }
+
+  // Cyclic child_ofs in malformed wire buffer must throw instead of hanging
+  {
+    std::vector<uint8_t> cyclic(2 * lite3cpp::config::node_size, 0);
+    lite3cpp::MutableNodeView n0(reinterpret_cast<lite3cpp::PackedNodeLayout*>(cyclic.data()));
+    n0.set_gen_type(1, lite3cpp::Type::Object);
+    n0.set_key_count(0);
+    n0.set_child_offset(0, static_cast<uint32_t>(lite3cpp::config::node_size));
+
+    lite3cpp::MutableNodeView n1(
+        reinterpret_cast<lite3cpp::PackedNodeLayout*>(cyclic.data() + lite3cpp::config::node_size));
+    n1.set_gen_type(1, lite3cpp::Type::Object);
+    n1.set_key_count(0);
+    n1.set_child_offset(0, static_cast<uint32_t>(lite3cpp::config::node_size)); // self-cycle!
+
+    lite3cpp::Buffer cyclic_view = lite3cpp::Buffer::from_view(cyclic.data(), cyclic.size());
+    EXPECT_THROW((void)cyclic_view.get_i64(0, "any"), lite3cpp::exception);
+    EXPECT_THROW((void)cyclic_view.begin(0), lite3cpp::exception);
+    EXPECT_THROW(
+        lite3cpp::Buffer::from_view(cyclic.data(), cyclic.size()).set_i64(0, "any", 1),
+        lite3cpp::exception);
+  }
 }
 

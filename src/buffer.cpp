@@ -5,6 +5,7 @@
 #include "utils/hash.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 
@@ -137,11 +138,33 @@ std::vector<uint8_t> Buffer::release() {
 }
 
 void Buffer::ensure_capacity(size_t required_bytes) {
-  materialize_if_view();
-  if (m_used_size + required_bytes > m_data.size()) {
-    size_t target_cap = m_data.capacity();
-    size_t needed = m_used_size + required_bytes;
-    size_t new_size = std::max(m_data.size() * 2, needed);
+  if (required_bytes > SIZE_MAX - m_used_size) {
+    throw exception("Buffer size overflow");
+  }
+  const size_t needed = m_used_size + required_bytes;
+
+  if (m_ext_data != nullptr) {
+    size_t new_size = (m_used_size <= SIZE_MAX / 2)
+                          ? std::max(m_used_size * 2, needed)
+                          : needed;
+    if (new_size < config::node_size) {
+      new_size = config::node_size;
+    }
+    const uint8_t *ext = m_ext_data;
+    const size_t used = m_used_size;
+    m_data.resize(new_size);
+    if (used > 0) {
+      std::memcpy(m_data.data(), ext, used);
+    }
+    m_ext_data = nullptr;
+    return;
+  }
+
+  if (needed > m_data.size()) {
+    const size_t target_cap = m_data.capacity();
+    const size_t doubled =
+        (m_data.size() <= SIZE_MAX / 2) ? (m_data.size() * 2) : SIZE_MAX;
+    size_t new_size = std::max(doubled, needed);
     if (new_size < target_cap && target_cap >= needed) {
       new_size = target_cap;
     }
@@ -172,7 +195,52 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
                         size_t val_len, const void *val_ptr, Type type,
                         bool is_append) {
   ScopedMetric sm("set");
-  materialize_if_view();
+  if (m_used_size < config::node_size || ofs > m_used_size - config::node_size) {
+    throw exception("Invalid offset");
+  }
+  if (!is_append && key.size() >= (1u << 30)) {
+    throw exception("Key size overflow");
+  }
+  if ((type == Type::String || type == Type::Bytes) && val_len > UINT32_MAX) {
+    throw exception("Value size overflow");
+  }
+
+  auto ptr_in_owned_buffer = [this](const void *p, size_t &out_ofs) noexcept -> bool {
+    if (p == nullptr || m_ext_data != nullptr || m_data.empty()) {
+      return false;
+    }
+    const auto base_addr = reinterpret_cast<std::uintptr_t>(m_data.data());
+    const auto end_addr = base_addr + m_data.size();
+    const auto p_addr = reinterpret_cast<std::uintptr_t>(p);
+    if (p_addr >= base_addr && p_addr < end_addr) {
+      out_ofs = static_cast<size_t>(p_addr - base_addr);
+      return true;
+    }
+    return false;
+  };
+
+  size_t key_alias_ofs = 0;
+  const bool key_aliases_owned =
+      !is_append && !key.empty() && ptr_in_owned_buffer(key.data(), key_alias_ofs);
+
+  size_t val_alias_ofs = 0;
+  const bool val_aliases_owned =
+      (val_len > 0 && val_ptr != nullptr) && ptr_in_owned_buffer(val_ptr, val_alias_ofs);
+
+  auto rebase_aliases = [&]() noexcept {
+    if (key_aliases_owned) {
+      key = std::string_view(
+          reinterpret_cast<const char *>(m_data.data() + key_alias_ofs),
+          key.size());
+    }
+    if (val_aliases_owned) {
+      val_ptr = m_data.data() + val_alias_ofs;
+    }
+  };
+
+  if (m_ext_data != nullptr) {
+    ensure_capacity(0);
+  }
 
   size_t key_tag_size = is_append ? 0 : key_tag_byte_count(key.size() + 1);
 
@@ -184,6 +252,13 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
   int path_depth = 0;
 
   while (true) {
+    if (node_ofs > m_used_size - config::node_size) {
+      throw exception("Corrupt B-tree node offset");
+    }
+    if (path_depth > static_cast<int>(config::tree_height_max) + 1 ||
+        path_depth >= 16) {
+      throw exception("Corrupt B-tree: max height exceeded");
+    }
     path[path_depth++] = node_ofs;
 
     // Re-acquire pointers
@@ -199,13 +274,20 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
     if (node.key_count() >= config::node_key_count_max) {
       log_if_enabled(LogLevel::Info, "Node is full, splitting", "set_impl",
                      std::chrono::microseconds(0), 0, "");
+      if (m_used_size > SIZE_MAX - config::node_alignment) {
+        throw exception("Buffer size overflow");
+      }
       size_t next_aligned = (m_used_size + config::node_alignment - 1) &
                             ~(config::node_alignment - 1);
       size_t space_needed = (parent_ofs == SIZE_MAX) ? (2 * config::node_size)
                                                      : config::node_size;
       ensure_capacity(space_needed + (next_aligned - m_used_size) +
                       128); // +slack
+      rebase_aliases();
 
+      if (next_aligned > m_used_size) {
+        std::memset(m_data.data() + m_used_size, 0, next_aligned - m_used_size);
+      }
       m_used_size = next_aligned;
 
       // RE-ACQUIRE
@@ -244,11 +326,15 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
 
       // Normal Split
       int i_in_parent = -1;
-      for (int k = 0; k <= parent.key_count(); ++k) {
+      for (int k = 0; k <= static_cast<int>(parent.key_count()); ++k) {
         if (parent.get_child_offset(k) == node_ofs) {
           i_in_parent = k;
           break;
         }
+      }
+      if (i_in_parent < 0 ||
+          parent.key_count() >= config::node_key_count_max) {
+        throw exception("Corrupt B-tree parent link");
       }
 
       size_t sibling_ofs = m_used_size;
@@ -302,8 +388,16 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
 
       // Update sizes if tracking...
 
-      if (key_hash > parent.get_hash(i_in_parent)) {
+      int cmp_med = compare_node_key(m_data.data(), bound_size(), parent,
+                                     i_in_parent, key_hash, key, is_append);
+      if (cmp_med < 0) {
         node_ofs = sibling_ofs;
+        path_depth--;
+      } else if (cmp_med == 0) {
+        node_ofs = parent_ofs;
+        path_depth -= 2;
+      } else {
+        path_depth--;
       }
       continue; // Restart loop
     }
@@ -313,12 +407,14 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
     int count = node.key_count();
     // Binary search could be better, but linear for small nodes (size 128) is
     // fine
-    while (i < count && compare_node_key(m_data.data(), m_data.size(), node, i, key_hash, key,
-                                         is_append) < 0)
+    while (i < count &&
+           compare_node_key(m_data.data(), bound_size(), node, i, key_hash, key,
+                            is_append) < 0)
       i++;
 
-    if (i < count && compare_node_key(m_data.data(), m_data.size(), node, i, key_hash, key,
-                                      is_append) == 0) {
+    if (i < count &&
+        compare_node_key(m_data.data(), bound_size(), node, i, key_hash, key,
+                         is_append) == 0) {
       // Calculate new size requirements early for both paths
       size_t klen = is_append ? 0 : (key.size() + key_tag_size + 1);
 
@@ -336,11 +432,15 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       if (!is_append) {
         uint32_t existing_klen = 0;
         size_t existing_tag_bytes = 0;
-        if (!decode_key_tag(m_data.data(), m_data.size(), vo, existing_klen,
+        if (!decode_key_tag(m_data.data(), bound_size(), vo, existing_klen,
                             existing_tag_bytes)) {
           throw exception("Corrupted key tag in buffer");
         }
         vo += existing_tag_bytes + existing_klen;
+      }
+
+      if (vo >= bound_size()) {
+        throw exception("Corrupted value offset in buffer");
       }
 
       // Check existing value size
@@ -349,6 +449,9 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       size_t existing_total_len = 1; // Type
 
       if (existing_type == Type::String || existing_type == Type::Bytes) {
+        if (bound_size() - vo < 5) {
+          throw exception("Corrupted value length in buffer");
+        }
         uint32_t raw_vlen = 0;
         std::memcpy(&raw_vlen, m_data.data() + vo + 1, 4);
         existing_vlen = raw_vlen;
@@ -366,6 +469,11 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
         existing_total_len += existing_vlen;
       }
 
+      if (existing_type != Type::Object && existing_type != Type::Array &&
+          existing_total_len > bound_size() - vo) {
+        throw exception("Corrupted value in buffer");
+      }
+
       if (type != Type::Object && type != Type::Array &&
           existing_type != Type::Object && existing_type != Type::Array &&
           existing_total_len == val_total_len) {
@@ -374,23 +482,28 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
         m_data[vo] = static_cast<uint8_t>(type); // Update Type
 
         if (type == Type::String || type == Type::Bytes) {
+          uint8_t *payload_dst = m_data.data() + vstart + 4;
+          if (val_len && payload_dst != val_ptr)
+            std::memmove(payload_dst, val_ptr, val_len);
           uint32_t sz = static_cast<uint32_t>(val_len);
           std::memcpy(m_data.data() + vstart, &sz, 4);
-          vstart += 4;
-          if (val_len)
-            std::memcpy(m_data.data() + vstart, val_ptr, val_len);
           if (type == Type::String)
-            m_data[vstart + val_len] = 0;
+            payload_dst[val_len] = 0;
         } else {
-          if (val_len)
-            std::memcpy(m_data.data() + vstart, val_ptr, val_len);
+          uint8_t *payload_dst = m_data.data() + vstart;
+          if (val_len && payload_dst != val_ptr)
+            std::memmove(payload_dst, val_ptr, val_len);
         }
         return vo;
       }
       // ===============================================
 
       // Fallback: Append
+      if (klen > SIZE_MAX - val_total_len) {
+        throw exception("Buffer size overflow");
+      }
       ensure_capacity(klen + val_total_len);
+      rebase_aliases();
       // Re-acquire pointers after resize
       node_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + node_ofs);
       MutableNodeView(node_ptr).set_kv_offset(i, m_used_size);
@@ -435,7 +548,11 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       if (type == Type::String)
         vlen++;
 
+      if (klen > SIZE_MAX - vlen) {
+        throw exception("Buffer size overflow");
+      }
       ensure_capacity(klen + vlen);
+      rebase_aliases();
       node_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + node_ofs);
       MutableNodeView node_upd(node_ptr);
 
@@ -488,6 +605,7 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
   const uint8_t *base = data();
   const size_t data_sz = bound_size();
   size_t node_ofs = ofs;
+  size_t depth = 0;
   // std::cout << "DEBUG: get_impl key='" << key << "' hash=" << hash <<
   // std::endl;
   while (true) {
@@ -495,6 +613,9 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
         node_ofs > data_sz - sizeof(PackedNodeLayout)) {
       type = Type::Invalid;
       return nullptr;
+    }
+    if (depth > config::tree_height_max) {
+      throw exception("Corrupt B-tree: max height exceeded");
     }
     NodeView node(
         reinterpret_cast<const PackedNodeLayout *>(base + node_ofs));
@@ -542,6 +663,7 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
     if (node.get_child_offset(0) != 0 && node.get_child_offset(i) != 0) {
       // std::cout << "DEBUG: Descending child " << i << std::endl;
       node_ofs = node.get_child_offset(i);
+      ++depth;
       continue;
     }
     // std::cout << "DEBUG: Not found in node." << std::endl;
@@ -580,6 +702,10 @@ int64_t Buffer::get_i64(size_t ofs, std::string_view key) const {
     return 0;
   if (t != Type::Int64)
     throw exception("Type mismatch");
+  const size_t rem = bound_size() -
+                     static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (rem < 8)
+    throw exception("Corrupt value");
   int64_t v;
   std::memcpy(&v, p, 8);
   return v;
@@ -589,6 +715,10 @@ double Buffer::get_f64(size_t ofs, std::string_view key) const {
   auto *p = get_impl(ofs, key, utils::djb2_hash(key), t);
   if (!p || t != Type::Float64)
     throw exception("Type mismatch or not found");
+  const size_t rem = bound_size() -
+                     static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (rem < 8)
+    throw exception("Corrupt value");
   double v;
   std::memcpy(&v, p, 8);
   return v;
@@ -598,17 +728,27 @@ bool Buffer::get_bool(size_t ofs, std::string_view key) const {
   auto *p = get_impl(ofs, key, utils::djb2_hash(key), t);
   if (!p || t != Type::Bool)
     throw exception("Type mismatch or not found");
-  bool v;
-  std::memcpy(&v, p, 1);
-  return v;
+  const size_t rem = bound_size() -
+                     static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (rem < 1)
+    throw exception("Corrupt value");
+  uint8_t raw = 0;
+  std::memcpy(&raw, p, 1);
+  return raw != 0;
 }
 std::string_view Buffer::get_str(size_t ofs, std::string_view key) const {
   Type t;
   auto *p = get_impl(ofs, key, utils::djb2_hash(key), t);
   if (!p || t != Type::String)
     return "";
+  const size_t rem = bound_size() -
+                     static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (rem < 4)
+    throw exception("Corrupt string length");
   uint32_t sz;
   std::memcpy(&sz, p, 4);
+  if (sz > rem - 4)
+    throw exception("Corrupt string length");
   return std::string_view(reinterpret_cast<const char *>(p + 4), sz);
 }
 
@@ -637,11 +777,15 @@ size_t Buffer::set_arr(size_t ofs, std::string_view key) {
 // Array appends - stub or implement
 void Buffer::arr_append_impl(size_t ofs, size_t val_len, const void *val_ptr,
                              Type type) {
-  materialize_if_view();
+  if (m_used_size < config::node_size || ofs > m_used_size - config::node_size) {
+    throw exception("Invalid offset");
+  }
+  NodeView arr_view(reinterpret_cast<const PackedNodeLayout *>(data() + ofs));
+  if (arr_view.type() != Type::Array) {
+    throw exception("Not an array");
+  }
   // We need size only to calculate idx
-  size_t current_size =
-      NodeView(reinterpret_cast<const PackedNodeLayout *>(m_data.data() + ofs))
-          .size();
+  size_t current_size = arr_view.size();
 
   set_impl(ofs, {}, static_cast<uint32_t>(current_size), val_len, val_ptr, type,
            true);
@@ -674,10 +818,14 @@ void Buffer::arr_append_bytes(size_t ofs, std::span<const std::byte> v) {
   arr_append_impl(ofs, v.size(), v.data(), Type::Bytes);
 }
 size_t Buffer::arr_append_obj(size_t ofs) {
-  materialize_if_view();
-  size_t idx =
-      NodeView(reinterpret_cast<const PackedNodeLayout *>(m_data.data() + ofs))
-          .size();
+  if (m_used_size < config::node_size || ofs > m_used_size - config::node_size) {
+    throw exception("Invalid offset");
+  }
+  NodeView arr_view(reinterpret_cast<const PackedNodeLayout *>(data() + ofs));
+  if (arr_view.type() != Type::Array) {
+    throw exception("Not an array");
+  }
+  size_t idx = arr_view.size();
   size_t o = set_impl(ofs, {}, static_cast<uint32_t>(idx), 0, nullptr,
                       Type::Object, true);
   size_t pos = o + 1;
@@ -696,10 +844,14 @@ size_t Buffer::arr_append_obj(size_t ofs) {
   return pos;
 }
 size_t Buffer::arr_append_arr(size_t ofs) {
-  materialize_if_view();
-  size_t idx =
-      NodeView(reinterpret_cast<const PackedNodeLayout *>(m_data.data() + ofs))
-          .size();
+  if (m_used_size < config::node_size || ofs > m_used_size - config::node_size) {
+    throw exception("Invalid offset");
+  }
+  NodeView arr_view(reinterpret_cast<const PackedNodeLayout *>(data() + ofs));
+  if (arr_view.type() != Type::Array) {
+    throw exception("Not an array");
+  }
+  size_t idx = arr_view.size();
   size_t o = set_impl(ofs, {}, static_cast<uint32_t>(idx), 0, nullptr,
                       Type::Array, true);
   size_t pos = o + 1;
@@ -728,6 +880,10 @@ int64_t Buffer::arr_get_i64(size_t ofs, uint32_t index) const {
   auto *p = arr_get_impl(ofs, index, t);
   if (!p || t != Type::Int64)
     throw exception("Type mismatch");
+  const size_t rem = bound_size() -
+                     static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (rem < 8)
+    throw exception("Corrupt value");
   int64_t v;
   std::memcpy(&v, p, 8);
   return v;
@@ -737,6 +893,10 @@ double Buffer::arr_get_f64(size_t ofs, uint32_t index) const {
   auto *p = arr_get_impl(ofs, index, t);
   if (!p || t != Type::Float64)
     throw exception("Type mismatch");
+  const size_t rem = bound_size() -
+                     static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (rem < 8)
+    throw exception("Corrupt value");
   double v;
   std::memcpy(&v, p, 8);
   return v;
@@ -746,17 +906,27 @@ bool Buffer::arr_get_bool(size_t ofs, uint32_t index) const {
   auto *p = arr_get_impl(ofs, index, t);
   if (!p || t != Type::Bool)
     throw exception("Type mismatch");
-  bool v;
-  std::memcpy(&v, p, 1);
-  return v;
+  const size_t rem = bound_size() -
+                     static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (rem < 1)
+    throw exception("Corrupt value");
+  uint8_t raw = 0;
+  std::memcpy(&raw, p, 1);
+  return raw != 0;
 }
 std::string_view Buffer::arr_get_str(size_t ofs, uint32_t index) const {
   Type t;
   auto *p = arr_get_impl(ofs, index, t);
   if (!p || t != Type::String)
     throw exception("Type mismatch");
+  const size_t rem = bound_size() -
+                     static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (rem < 4)
+    throw exception("Corrupt string length");
   uint32_t sz;
   std::memcpy(&sz, p, 4);
+  if (sz > rem - 4)
+    throw exception("Corrupt string length");
   return std::string_view(reinterpret_cast<const char *>(p + 4), sz);
 }
 std::span<const std::byte> Buffer::arr_get_bytes(size_t ofs,
@@ -765,16 +935,15 @@ std::span<const std::byte> Buffer::arr_get_bytes(size_t ofs,
   auto *p = arr_get_impl(ofs, index, t);
   if (!p || t != Type::Bytes)
     throw exception("Type mismatch");
-  size_t offset = static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
-  size_t limit = bound_size();
-  if (offset + sizeof(uint32_t) <= limit) {
-    uint32_t sz;
-    std::memcpy(&sz, p, 4);
-    if (offset + sizeof(uint32_t) + sz <= limit) {
-      return {reinterpret_cast<const std::byte *>(p + 4), sz};
-    }
-  }
-  return {};
+  const size_t rem = bound_size() -
+                     static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (rem < sizeof(uint32_t))
+    throw exception("Corrupt bytes length");
+  uint32_t sz;
+  std::memcpy(&sz, p, 4);
+  if (sz > rem - sizeof(uint32_t))
+    throw exception("Corrupt bytes length");
+  return {reinterpret_cast<const std::byte *>(p + 4), sz};
 }
 size_t Buffer::arr_get_obj(size_t ofs, uint32_t index) const {
   Type t;
@@ -787,14 +956,22 @@ size_t Buffer::arr_get_obj(size_t ofs, uint32_t index) const {
   // type) So p points to Node data start? If Type is Object, value content
   // IS the Node structure (or nested structure). Yes. So offset of node is
   // p - data().
-  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  const size_t node_ofs =
+      static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (bound_size() - node_ofs < config::node_size)
+    throw exception("Corrupt nested node");
+  return node_ofs;
 }
 size_t Buffer::arr_get_arr(size_t ofs, uint32_t index) const {
   Type t;
   auto *p = arr_get_impl(ofs, index, t);
   if (!p || t != Type::Array)
     throw exception("Type mismatch");
-  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  const size_t node_ofs =
+      static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (bound_size() - node_ofs < config::node_size)
+    throw exception("Corrupt nested node");
+  return node_ofs;
 }
 Type Buffer::arr_get_type(size_t ofs, uint32_t index) const {
   Type t = Type::Null;
@@ -812,14 +989,22 @@ size_t Buffer::get_obj(size_t ofs, std::string_view key) const {
   auto *p = get_impl(ofs, key, utils::djb2_hash(key), t);
   if (!p || t != Type::Object)
     throw exception("Type mismatch");
-  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  const size_t node_ofs =
+      static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (bound_size() - node_ofs < config::node_size)
+    throw exception("Corrupt nested node");
+  return node_ofs;
 }
 size_t Buffer::get_arr(size_t ofs, std::string_view key) const {
   Type t;
   auto *p = get_impl(ofs, key, utils::djb2_hash(key), t);
   if (!p || t != Type::Array)
     throw exception("Type mismatch");
-  return static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  const size_t node_ofs =
+      static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - data());
+  if (bound_size() - node_ofs < config::node_size)
+    throw exception("Corrupt nested node");
+  return node_ofs;
 }
 
 std::span<const std::byte> Buffer::get_bytes(size_t ofs,
@@ -829,16 +1014,15 @@ std::span<const std::byte> Buffer::get_bytes(size_t ofs,
   const std::byte *ptr = get_impl(ofs, key, hash, type, false);
 
   if (ptr && type == Type::Bytes) {
-    size_t offset =
-        static_cast<size_t>(reinterpret_cast<const uint8_t *>(ptr) - data());
-    size_t limit = bound_size();
-    if (offset + sizeof(uint32_t) <= limit) {
-      uint32_t size;
-      std::memcpy(&size, ptr, sizeof(uint32_t));
-      if (offset + sizeof(uint32_t) + size <= limit) {
-        return {reinterpret_cast<const std::byte *>(ptr + sizeof(uint32_t)), size};
-      }
-    }
+    const size_t rem = bound_size() -
+                       static_cast<size_t>(reinterpret_cast<const uint8_t *>(ptr) - data());
+    if (rem < sizeof(uint32_t))
+      throw exception("Corrupt bytes length");
+    uint32_t size;
+    std::memcpy(&size, ptr, sizeof(uint32_t));
+    if (size > rem - sizeof(uint32_t))
+      throw exception("Corrupt bytes length");
+    return {reinterpret_cast<const std::byte *>(ptr + sizeof(uint32_t)), size};
   }
   return {};
 }

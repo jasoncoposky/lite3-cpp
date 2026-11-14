@@ -94,8 +94,10 @@ void Iterator::find_first() {
   NodeView current_node(reinterpret_cast<const PackedNodeLayout *>(
       m_buffer->data() + m_stack[m_depth].offset));
 
-  while (current_node.get_child_offset(0) != 0 &&
-         m_depth < config::tree_height_max) {
+  while (current_node.get_child_offset(0) != 0) {
+    if (m_depth >= static_cast<int>(config::tree_height_max)) {
+      throw lite3cpp::exception("Corrupt B-tree: max height exceeded");
+    }
     size_t child_ofs = current_node.get_child_offset(0);
     if (child_ofs > m_buffer->bound_size() - sizeof(PackedNodeLayout)) {
       m_buffer = nullptr;
@@ -176,8 +178,10 @@ void Iterator::find_next() {
       static_cast<Type>(m_buffer->data()[m_current_value.value_offset]);
 
   m_stack[m_depth].key_index++;
-  if (current_node.get_child_offset(m_stack[m_depth].key_index) != 0 &&
-      m_depth < config::tree_height_max) {
+  if (current_node.get_child_offset(m_stack[m_depth].key_index) != 0) {
+    if (m_depth >= static_cast<int>(config::tree_height_max)) {
+      throw lite3cpp::exception("Corrupt B-tree: max height exceeded");
+    }
     size_t child_ofs =
         current_node.get_child_offset(m_stack[m_depth].key_index);
     if (child_ofs > m_buffer->bound_size() - sizeof(PackedNodeLayout)) {

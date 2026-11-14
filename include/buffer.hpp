@@ -89,8 +89,12 @@ public:
   }
   size_t size() const noexcept { return m_used_size; }
   void reserve(size_t capacity) {
-    materialize_if_view();
-    m_data.reserve(capacity);
+    if (m_ext_data != nullptr) {
+      m_data.reserve(capacity > m_used_size ? capacity : m_used_size);
+      materialize_if_view();
+    } else {
+      m_data.reserve(capacity);
+    }
   }
   size_t capacity() const noexcept {
     return m_ext_data ? 0 : m_data.capacity();

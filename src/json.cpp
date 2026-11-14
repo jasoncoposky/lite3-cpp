@@ -5,9 +5,10 @@
 #include "utils/hex.hpp"     // Include new hex utility
 #include "yyjson.h"
 #include <chrono>      // Add this
+#include <cstring>
+#include <memory>
 #include <string_view> // Add this
 #include <vector>
-#include <cstring>
 
 
 namespace lite3cpp {
@@ -18,7 +19,7 @@ void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs);
 void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs,
                      const char *key);
 yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
-                              yyjson_mut_doc *doc);
+                              yyjson_mut_doc *doc, size_t depth = 0);
 
 struct ScopedMetric {
   [[maybe_unused]] std::string_view op;
@@ -59,6 +60,8 @@ std::string to_json_string(const Buffer &buffer, size_t ofs) {
   lite3cpp::log_if_enabled(lite3cpp::LogLevel::Info, "JSON stringify started.",
                            "JsonStringify", std::chrono::microseconds(0), ofs);
   yyjson_mut_doc *doc = yyjson_mut_doc_new(nullptr);
+  std::unique_ptr<yyjson_mut_doc, decltype(&yyjson_mut_doc_free)> doc_guard(
+      doc, &yyjson_mut_doc_free);
   
   yyjson_mut_val *root = nullptr;
   if (ofs == 0 && buffer.size() >= config::node_size) {
@@ -68,8 +71,10 @@ std::string to_json_string(const Buffer &buffer, size_t ofs) {
       if (root_type == Type::Object) {
           root = yyjson_mut_obj(doc);
           for (auto it = buffer.begin(0); it != buffer.end(0); ++it) {
-              yyjson_mut_obj_add_val(doc, root, it->key.data(),
-                                     to_yyjson_val(buffer, it->value_offset, doc));
+              yyjson_mut_val *kval =
+                  yyjson_mut_strncpy(doc, it->key.data(), it->key.size());
+              yyjson_mut_obj_add(
+                  root, kval, to_yyjson_val(buffer, it->value_offset, doc, 1));
           }
       } else if (root_type == Type::Array) {
           root = yyjson_mut_arr(doc);
@@ -107,11 +112,11 @@ std::string to_json_string(const Buffer &buffer, size_t ofs) {
               }
               case Type::Object:
                 yyjson_mut_arr_add_val(
-                    root, to_yyjson_val(buffer, buffer.arr_get_obj(0, i) - 1, doc));
+                    root, to_yyjson_val(buffer, buffer.arr_get_obj(0, i) - 1, doc, 1));
                 break;
               case Type::Array:
                 yyjson_mut_arr_add_val(
-                    root, to_yyjson_val(buffer, buffer.arr_get_arr(0, i) - 1, doc));
+                    root, to_yyjson_val(buffer, buffer.arr_get_arr(0, i) - 1, doc, 1));
                 break;
               default:
                 break;
@@ -121,14 +126,13 @@ std::string to_json_string(const Buffer &buffer, size_t ofs) {
           root = yyjson_mut_null(doc);
       }
   } else {
-      root = to_yyjson_val(buffer, ofs, doc);
+      root = to_yyjson_val(buffer, ofs, doc, 0);
   }
 
   yyjson_mut_doc_set_root(doc, root);
   const char *json_str = yyjson_mut_write(doc, 0, nullptr);
   std::string result(json_str ? json_str : "{}");
   if (json_str) free((void *)json_str);
-  yyjson_mut_doc_free(doc);
   return result;
 }
 
@@ -263,35 +267,65 @@ void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs) {
 }
 
 yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
-                              yyjson_mut_doc *doc) {
+                              yyjson_mut_doc *doc, size_t depth) {
+  if (depth > 64) {
+    throw lite3cpp::exception("JSON nesting depth exceeded");
+  }
+  if (ofs >= buffer.size()) {
+    throw lite3cpp::exception("Corrupt value offset");
+  }
+  const size_t rem = buffer.size() - (ofs + 1);
   Type type = static_cast<Type>(buffer.data()[ofs]);
   switch (type) {
   case Type::Null:
     return yyjson_mut_null(doc);
-  case Type::Bool:
-    return yyjson_mut_bool(
-        doc, *reinterpret_cast<const bool *>(buffer.data() + ofs + 1));
+  case Type::Bool: {
+    if (rem < 1) {
+      throw lite3cpp::exception("Corrupt value");
+    }
+    uint8_t raw = 0;
+    std::memcpy(&raw, buffer.data() + ofs + 1, 1);
+    return yyjson_mut_bool(doc, raw != 0);
+  }
   case Type::Int64: {
+    if (rem < sizeof(int64_t)) {
+      throw lite3cpp::exception("Corrupt value");
+    }
     int64_t val;
     std::memcpy(&val, buffer.data() + ofs + 1, sizeof(val));
     return yyjson_mut_int(doc, val);
   }
   case Type::Float64: {
+    if (rem < sizeof(double)) {
+      throw lite3cpp::exception("Corrupt value");
+    }
     double val;
     std::memcpy(&val, buffer.data() + ofs + 1, sizeof(val));
     return yyjson_mut_real(doc, val);
   }
   case Type::String: {
+    if (rem < sizeof(uint32_t)) {
+      throw lite3cpp::exception("Corrupt string length");
+    }
     uint32_t size;
     std::memcpy(&size, buffer.data() + ofs + 1, sizeof(size));
+    if (size > rem - sizeof(uint32_t)) {
+      throw lite3cpp::exception("Corrupt string length");
+    }
     const char *str_data =
         reinterpret_cast<const char *>(buffer.data() + ofs + 1 + sizeof(size));
     return yyjson_mut_strncpy(doc, str_data,
                               size); // Use strncpy to copy the string
   }
   case Type::Bytes: {
+    if (rem < sizeof(uint32_t)) {
+      throw lite3cpp::exception("Corrupt bytes length");
+    }
     uint32_t size;
     std::memcpy(&size, buffer.data() + ofs + 1, sizeof(size));
+    if (size > rem - sizeof(uint32_t)) {
+      throw lite3cpp::exception("Corrupt bytes length");
+    }
     const uint8_t *bytes = reinterpret_cast<const uint8_t *>(
         buffer.data() + ofs + 1 + sizeof(size));
     std::string hex_str;
@@ -303,14 +337,22 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
     return yyjson_mut_strncpy(doc, hex_str.data(), hex_str.size());
   }
   case Type::Object: {
+    if (rem < config::node_size) {
+      throw lite3cpp::exception("Corrupt nested node");
+    }
     yyjson_mut_val *obj = yyjson_mut_obj(doc);
     for (auto it = buffer.begin(ofs + 1); it != buffer.end(ofs + 1); ++it) {
-      yyjson_mut_obj_add_val(doc, obj, it->key.data(),
-                             to_yyjson_val(buffer, it->value_offset, doc));
+      yyjson_mut_val *kval =
+          yyjson_mut_strncpy(doc, it->key.data(), it->key.size());
+      yyjson_mut_obj_add(
+          obj, kval, to_yyjson_val(buffer, it->value_offset, doc, depth + 1));
     }
     return obj;
   }
   case Type::Array: {
+    if (rem < config::node_size) {
+      throw lite3cpp::exception("Corrupt nested node");
+    }
     yyjson_mut_val *arr = yyjson_mut_arr(doc);
     NodeView node(
         reinterpret_cast<const PackedNodeLayout *>(buffer.data() + ofs + 1));
@@ -348,11 +390,13 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
       }
       case Type::Object:
         yyjson_mut_arr_add_val(
-            arr, to_yyjson_val(buffer, buffer.arr_get_obj(ofs + 1, i) - 1, doc));
+            arr, to_yyjson_val(buffer, buffer.arr_get_obj(ofs + 1, i) - 1, doc,
+                               depth + 1));
         break;
       case Type::Array:
         yyjson_mut_arr_add_val(
-            arr, to_yyjson_val(buffer, buffer.arr_get_arr(ofs + 1, i) - 1, doc));
+            arr, to_yyjson_val(buffer, buffer.arr_get_arr(ofs + 1, i) - 1, doc,
+                               depth + 1));
         break;
       default:
         break;
