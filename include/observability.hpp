@@ -87,12 +87,12 @@ inline bool log_if_enabled(LogLevel level, std::string_view message,
                            std::chrono::microseconds duration,
                            size_t buffer_offset, std::string_view key = "") {
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
+  ILogger *logger = g_logger.load(std::memory_order_relaxed);
+  if (logger == nullptr) [[likely]] {
+    return true;
+  }
   if (level >= g_log_level_threshold.load(std::memory_order_acquire)) {
-    ILogger *logger = g_logger.load(std::memory_order_acquire);
-    if (logger) { // Should always be true due to NullLogger, but good practice
-      return logger->log(level, message, operation, duration, buffer_offset,
-                         key);
-    }
+    return logger->log(level, message, operation, duration, buffer_offset, key);
   }
 #endif
   return true; // Indicate that logging was attempted. Individual logger can

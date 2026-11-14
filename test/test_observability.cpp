@@ -110,15 +110,23 @@ TEST_F(ObservabilityTest, LoggingMetricsInvocation) {
   // We'll assert at least one for each.
   // ASSERT_GT(mock_logger.log_call_count.load(), 0); // Logging is only
   // covering critical events/splits
+#ifndef LITE3CPP_DISABLE_OBSERVABILITY
   ASSERT_GT(mock_metrics.metric_call_count.load(), 0);
+#else
+  EXPECT_EQ(mock_metrics.metric_call_count.load(), 0);
+#endif
 
   // Perform a get operation
   buffer.get_str(0, "test_key");
 
   // Expect more calls after get operation
   // ASSERT_GT(mock_logger.log_call_count.load(), 2); // Initial logs + get log
+#ifndef LITE3CPP_DISABLE_OBSERVABILITY
   ASSERT_GT(mock_metrics.metric_call_count.load(),
             2); // Initial metrics + get metrics
+#else
+  EXPECT_EQ(mock_metrics.metric_call_count.load(), 0);
+#endif
 }
 
 TEST_F(ObservabilityTest, ThreadSafetySetLogger) {
@@ -156,7 +164,9 @@ TEST_F(ObservabilityTest, ThreadSafetySetLogger) {
     t.join();
   }
 
+#ifndef LITE3CPP_DISABLE_OBSERVABILITY
   ASSERT_NE(lite3cpp::g_logger.load(std::memory_order_acquire), nullptr);
+#endif
 }
 
 TEST_F(ObservabilityTest, ThreadSafetySetMetrics) {
@@ -194,5 +204,21 @@ TEST_F(ObservabilityTest, ThreadSafetySetMetrics) {
     t.join();
   }
 
+#ifndef LITE3CPP_DISABLE_OBSERVABILITY
   ASSERT_NE(lite3cpp::g_metrics.load(std::memory_order_acquire), nullptr);
+#endif
+}
+
+TEST_F(ObservabilityTest, NullResetStoresNullptrForZeroOverheadFastPath) {
+  lite3cpp::set_logger(nullptr);
+  lite3cpp::set_metrics(nullptr);
+#ifndef LITE3CPP_DISABLE_OBSERVABILITY
+  EXPECT_EQ(lite3cpp::g_logger.load(std::memory_order_acquire), nullptr);
+  EXPECT_EQ(lite3cpp::g_metrics.load(std::memory_order_acquire), nullptr);
+#endif
+
+  lite3cpp::Buffer buf;
+  buf.init_object();
+  buf.set_i64(0, "fast", 1);
+  EXPECT_EQ(buf.get_i64(0, "fast"), 1);
 }

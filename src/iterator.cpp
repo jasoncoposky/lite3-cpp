@@ -144,71 +144,19 @@ void Iterator::find_next() {
   // My `set_impl` puts [Tag][Key][Type][Value].
   // kv_offset points to Tag.
 
-  if (kv_offset >= m_buffer->m_data.size()) {
-    m_buffer = nullptr;
-    return;
-  }
-
-  uint8_t key_tag = m_buffer->m_data[kv_offset];
-  uint32_t key_size = key_tag >> 2;
-
-  if (key_size == 0 || (kv_offset + 1 + key_size > m_buffer->m_data.size())) {
+  uint32_t key_size = 0;
+  size_t tag_size = 0;
+  if (!decode_key_tag(m_buffer->m_data.data(), m_buffer->m_data.size(),
+                      kv_offset, key_size, tag_size)) {
     m_buffer = nullptr;
     return;
   }
 
   m_current_value.key = std::string_view(
-      reinterpret_cast<const char *>(m_buffer->m_data.data() + kv_offset + 1),
+      reinterpret_cast<const char *>(m_buffer->m_data.data() + kv_offset +
+                                     tag_size),
       key_size - 1);
-  m_current_value.value_offset =
-      kv_offset + 1 + (key_size - 1) + 1; // +1 tag, +chars, +null?
-  // Actually: `set_impl` wrote: [Tag (1)] [Key (sz-1)] [Null (1)]
-  // Tag encodes SIZE = sz.
-  // Data written: tag (1), key (sz-1), null (1). Total 1 + sz.
-  // So value starts at `kv_offset + 1 + (key_size-1) + 1`?
-  // In `set_impl`: `m_data[start] = (ks << 2)`. ks = key.size()+1.
-  // `memcpy(start+1, key, key.size())`. `m_data[start+1+key.size()] = 0`.
-  // Total bytes used for key: 1 + key.size() + 1.
-  // key_size (from tag) = key.size() + 1.
-  // So Value Start = Start + 1 + key.size() + 1? No.
-  // `set_impl` calculated `klen` = `is_append ? 0 : (key.size() +
-  // key_tag_size)`. If key_tag_size=1, `klen` = `key.size() + 1`. Wait, `klen`
-  // calculation in `set_impl`: `klen = key.size() + key_tag_size`. (e.g. 5 + 1
-  // = 6). `m_data[start] = tag`. (1 byte). `memcpy(start+1, key, size)`. (5
-  // bytes). `m_data[start+1+size] = 0`? Only if `type==String` for VALUE. Key
-  // null terminator is NOT added in `set_impl` explicitly for keys? Ah,
-  // `set_impl`: `m_data[insert_ofs+1+key.size()] = 0;` was commented out? No:
-  // `if (!is_append)` block: `m_data[insert_ofs] = ...` `memcpy(...,
-  // key.data(), key.size())` `m_data[insert_ofs + 1 + key.size()] = 0;`  <<
-  // This line. So YES, null terminator is there. So total key len = 1 +
-  // key.size() + 1. My `klen` calculation in `set_impl` was `key.size() +
-  // key_tag_size`. If `key_tag_size` was 1. `klen` = size+1. But we write
-  // size+2 bytes (tag, data, null). ERROR in `set_impl`: I allocated `klen` but
-  // wrote `klen+1`? Let's check `set_impl` in `buffer.cpp` again. `size_t klen
-  // = is_append ? 0 : (key.size() + key_tag_size);` `m_data[start] = ...`
-  // `memcpy...`
-  // `m_data[... null] = 0;` <- `start+1+key.size()`.
-  // `start+1+key.size()` is indeed `start + klen`?
-  // If `key_tag_size`=1. `klen` = size+1.
-  // Indices: 0 (tag), 1..size (data). size+1 (null).
-  // 0 to size+1 is size+2 bytes.
-  // `klen` accounts for size+1 bytes.
-  // So I undersized by 1 byte in set_impl?
-  // OR `key_tag_size` accounts for it?
-  // In `lite3_val_calc_key_size`: `size = key_len + key_tag_size`.
-  // Does `key_len` include null?
-  // `lite3.c`: `key_len = strlen(key) + 1`.
-  // So yes.
-  // My `set_impl` used `key.size()` which is usually without null.
-  // So I likely need `key.size() + 1`.
-
-  // I will fix `set_impl` later if benchmark crashes or I find memory
-  // corruption. For now, in `Iterator`, I assume standard layout. If I assume
-  // `set_impl` wrote [Tag][Key][Null], then: Key String View length = `key_size
-  // - 1` (tag says size includes null). Pointer = `kv_offset + 1`. Next offset
-  // (Value) = `kv_offset + 1 + key_size`. (Tag(1) + Key(size included null)).
-
-  m_current_value.value_offset = kv_offset + 1 + key_size;
+  m_current_value.value_offset = kv_offset + tag_size + key_size;
 
   if (m_current_value.value_offset >= m_buffer->m_data.size()) {
     m_buffer = nullptr;

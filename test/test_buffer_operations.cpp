@@ -140,6 +140,7 @@ TEST_F(BufferTest, BTreeSplit) {
     buffer.set_i64(0, key, i);
   }
 
+#ifndef LITE3CPP_DISABLE_OBSERVABILITY
   // Verify that a split occurred
   bool split_found = false;
   for (const auto &entry : test_logger.logs) {
@@ -150,6 +151,7 @@ TEST_F(BufferTest, BTreeSplit) {
     }
   }
   ASSERT_TRUE(split_found);
+#endif
 
   // Verify that all keys can be retrieved
   for (int i = 0; i < lite3cpp::config::node_key_count + 1; ++i) {
@@ -335,5 +337,83 @@ TEST_F(BufferTest, ExplicitStringAndNullSafety) {
   EXPECT_NE(s.find("hello world"), std::string::npos);
   EXPECT_NE(s.find("count"), std::string::npos);
   EXPECT_NE(s.find("42"), std::string::npos);
+}
+
+TEST_F(BufferTest, OverwriteNullOrScalarWithNestedObjectAndArrayDoesNotCorruptSiblings) {
+  lite3cpp::Buffer buf;
+  buf.init_object();
+  buf.set_null(0, "slot_a");
+  buf.set_str(0, "neighbor_after_a", "intact_neighbor_payload_value");
+  buf.set_null(0, "slot_b");
+  buf.set_i64(0, "tail_counter", 987654321LL);
+
+  size_t obj_ofs = buf.set_obj(0, "slot_a");
+  buf.set_str(obj_ofs, "inner_k", "inner_v");
+
+  size_t arr_ofs = buf.set_arr(0, "slot_b");
+  buf.arr_append_i64(arr_ofs, 42);
+
+  EXPECT_EQ(buf.get_str(0, "neighbor_after_a"), "intact_neighbor_payload_value");
+  EXPECT_EQ(buf.get_i64(0, "tail_counter"), 987654321LL);
+  EXPECT_EQ(buf.get_str(buf.get_obj(0, "slot_a"), "inner_k"), "inner_v");
+  EXPECT_EQ(buf.arr_get_i64(buf.get_arr(0, "slot_b"), 0), 42);
+
+  buf.set_null(0, "slot_a");
+  EXPECT_EQ(buf.get_type(0, "slot_a"), lite3cpp::Type::Null);
+  EXPECT_EQ(buf.get_str(0, "neighbor_after_a"), "intact_neighbor_payload_value");
+}
+
+TEST_F(BufferTest, NewObjectAndArrayNodesZeroEntire96ByteAlignedRegion) {
+  std::vector<uint8_t> poisoned(512, 0xAA);
+  lite3cpp::Buffer buf(std::move(poisoned));
+  buf.init_object();
+  size_t child_obj = buf.set_obj(0, "child_obj");
+  size_t child_arr = buf.set_arr(0, "child_arr");
+  size_t nested_obj = buf.arr_append_obj(child_arr);
+  size_t nested_arr = buf.arr_append_arr(child_arr);
+
+  const auto* obj_layout = reinterpret_cast<const lite3cpp::PackedNodeLayout*>(buf.data() + child_obj);
+  const auto* arr_layout = reinterpret_cast<const lite3cpp::PackedNodeLayout*>(buf.data() + child_arr);
+  const auto* nested_obj_layout = reinterpret_cast<const lite3cpp::PackedNodeLayout*>(buf.data() + nested_obj);
+  const auto* nested_arr_layout = reinterpret_cast<const lite3cpp::PackedNodeLayout*>(buf.data() + nested_arr);
+  for (size_t i = 0; i <= lite3cpp::config::node_key_count; ++i) {
+    EXPECT_EQ(obj_layout->child_offsets[i], 0u);
+    EXPECT_EQ(arr_layout->child_offsets[i], 0u);
+    EXPECT_EQ(nested_obj_layout->child_offsets[i], 0u);
+    EXPECT_EQ(nested_arr_layout->child_offsets[i], 0u);
+  }
+}
+
+TEST_F(BufferTest, LongKeys63BytesAnd200BytesRoundTripAndIterate) {
+  lite3cpp::Buffer buf;
+  buf.init_object();
+
+  std::string key_62(62, 'a');
+  std::string key_63(63, 'b');
+  std::string key_200(200, 'c');
+  std::string key_16383(16383, 'd');
+
+  buf.set_str(0, key_62, "val_62");
+  buf.set_str(0, key_63, "val_63");
+  buf.set_i64(0, key_200, 1337);
+  buf.set_i64(0, key_16383, 9001);
+
+  EXPECT_EQ(buf.get_str(0, key_62), "val_62");
+  EXPECT_EQ(buf.get_str(0, key_63), "val_63");
+  EXPECT_EQ(buf.get_i64(0, key_200), 1337);
+  EXPECT_EQ(buf.get_i64(0, key_16383), 9001);
+
+  buf.set_i64(0, key_200, 7331);
+  EXPECT_EQ(buf.get_i64(0, key_200), 7331);
+  buf.set_str(0, key_63, "longer_val_63_payload");
+  EXPECT_EQ(buf.get_str(0, key_63), "longer_val_63_payload");
+
+  size_t count = 0;
+  for (auto it = buf.begin(0); it != buf.end(0); ++it) {
+    auto k = it.key();
+    EXPECT_TRUE(k == key_62 || k == key_63 || k == key_200 || k == key_16383);
+    ++count;
+  }
+  EXPECT_EQ(count, 4u);
 }
 

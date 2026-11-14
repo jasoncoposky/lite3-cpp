@@ -23,25 +23,28 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
 struct ScopedMetric {
   std::string_view op;
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
-  std::chrono::high_resolution_clock::time_point start;
+  IMetrics *metrics = nullptr;
+  std::chrono::high_resolution_clock::time_point start{};
 #endif
   ScopedMetric(std::string_view o) : op(o) {
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
-    start = std::chrono::high_resolution_clock::now();
+    IMetrics *m = lite3cpp::g_metrics.load(std::memory_order_relaxed);
+    if (m != nullptr) [[unlikely]] {
+      metrics = m;
+      start = std::chrono::high_resolution_clock::now();
+    }
 #endif
   }
   ~ScopedMetric() {
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
-    try {
-      auto end = std::chrono::high_resolution_clock::now();
-      double dur = std::chrono::duration<double>(end - start).count();
-      // Access g_metrics qualified
-      IMetrics *m = lite3cpp::g_metrics.load(std::memory_order_acquire);
-      if (m) {
-        m->record_latency(op, dur);
-        m->increment_operation_count(op, "ok");
+    if (metrics != nullptr) [[unlikely]] {
+      try {
+        auto end = std::chrono::high_resolution_clock::now();
+        double dur = std::chrono::duration<double>(end - start).count();
+        metrics->record_latency(op, dur);
+        metrics->increment_operation_count(op, "ok");
+      } catch (...) {
       }
-    } catch (...) {
     }
 #endif
   }

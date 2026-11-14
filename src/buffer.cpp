@@ -28,14 +28,14 @@ static int compare_node_key(const uint8_t *base, size_t data_size, const NodeVie
     return 0; // Arrays use unique index as hash
 
   size_t vo = node.get_kv_offset(idx);
-  if (vo >= data_size) return -1;
-  uint8_t tag = base[vo];
-  uint32_t klen = tag >> 2;
-  if (klen == 0) return -1;
+  uint32_t klen = 0;
+  size_t tag_bytes = 0;
+  if (!decode_key_tag(base, data_size, vo, klen, tag_bytes))
+    return -1;
   size_t ksz = klen - 1;
-  if (vo + 1 + ksz > data_size) return -1;
 
-  std::string_view existing(reinterpret_cast<const char *>(base + vo + 1), ksz);
+  std::string_view existing(
+      reinterpret_cast<const char *>(base + vo + tag_bytes), ksz);
   int cmp = existing.compare(key);
   // std::cout << "DEBUG: Key compare: '" << existing << "' vs '" << key
   //           << "' = " << cmp << std::endl;
@@ -45,24 +45,28 @@ static int compare_node_key(const uint8_t *base, size_t data_size, const NodeVie
 struct ScopedMetric {
   std::string_view op;
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
-  std::chrono::high_resolution_clock::time_point start;
+  IMetrics *metrics = nullptr;
+  std::chrono::high_resolution_clock::time_point start{};
 #endif
   ScopedMetric(std::string_view o) : op(o) {
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
-    start = std::chrono::high_resolution_clock::now();
+    IMetrics *m = g_metrics.load(std::memory_order_relaxed);
+    if (m != nullptr) [[unlikely]] {
+      metrics = m;
+      start = std::chrono::high_resolution_clock::now();
+    }
 #endif
   }
   ~ScopedMetric() {
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
-    try {
-      auto end = std::chrono::high_resolution_clock::now();
-      double dur = std::chrono::duration<double>(end - start).count();
-      IMetrics *m = g_metrics.load(std::memory_order_acquire);
-      if (m) {
-        m->record_latency(op, dur);
-        m->increment_operation_count(op, "ok");
+    if (metrics != nullptr) [[unlikely]] {
+      try {
+        auto end = std::chrono::high_resolution_clock::now();
+        double dur = std::chrono::duration<double>(end - start).count();
+        metrics->record_latency(op, dur);
+        metrics->increment_operation_count(op, "ok");
+      } catch (...) {
       }
-    } catch (...) {
     }
 #endif
   }
@@ -106,14 +110,14 @@ void Buffer::ensure_capacity(size_t required_bytes) {
 }
 
 void Buffer::init_structure(Type type) {
+  m_used_size = 0;
   ensure_capacity(config::node_size);
-  std::memset(m_data.data() + m_used_size, 0, config::node_size);
+  std::memset(m_data.data(), 0, config::node_size);
 
-  MutableNodeView root(
-      reinterpret_cast<PackedNodeLayout *>(m_data.data() + m_used_size));
+  MutableNodeView root(reinterpret_cast<PackedNodeLayout *>(m_data.data()));
   root.set_gen_type(1, type);
 
-  m_used_size += config::node_size;
+  m_used_size = config::node_size;
 }
 
 void Buffer::init_object() { init_structure(Type::Object); }
@@ -126,15 +130,7 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
                         bool is_append) {
   ScopedMetric sm("set");
 
-  size_t key_tag_size = 0;
-  if (!is_append) {
-    if (key.size() < 64)
-      key_tag_size = 1;
-    else if (key.size() < 16384)
-      key_tag_size = 2;
-    else
-      key_tag_size = 3;
-  }
+  size_t key_tag_size = is_append ? 0 : key_tag_byte_count(key.size() + 1);
 
   size_t parent_ofs = SIZE_MAX;
   size_t node_ofs = ofs;
@@ -157,12 +153,8 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
     // std::cout << "DEBUG: Checking split: " << node.key_count() << " >= " <<
     // config::node_key_count_max << std::endl;
     if (node.key_count() >= config::node_key_count_max) {
-#ifndef LITE3CPP_DISABLE_OBSERVABILITY
-      if (ILogger *logger = g_logger.load(std::memory_order_acquire)) {
-        logger->log(LogLevel::Info, "Node is full, splitting", "set_impl",
-                    std::chrono::microseconds(0), 0, "");
-      }
-#endif
+      log_if_enabled(LogLevel::Info, "Node is full, splitting", "set_impl",
+                     std::chrono::microseconds(0), 0, "");
       size_t next_aligned = (m_used_size + config::node_alignment - 1) &
                             ~(config::node_alignment - 1);
       size_t space_needed = (parent_ofs == SIZE_MAX) ? (2 * config::node_size)
@@ -298,11 +290,13 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       // Calculate existing value offset
       size_t vo = kv_ofs;
       if (!is_append) {
-        uint8_t tag = m_data[vo];
-        uint32_t existing_klen = (tag >> 2);
-        vo +=
-            1 +
-            existing_klen; // Skip Tag + Key + Null (Note: tag>>2 includes null)
+        uint32_t existing_klen = 0;
+        size_t existing_tag_bytes = 0;
+        if (!decode_key_tag(m_data.data(), m_data.size(), vo, existing_klen,
+                            existing_tag_bytes)) {
+          throw exception("Corrupted key tag in buffer");
+        }
+        vo += existing_tag_bytes + existing_klen;
       }
 
       // Check existing value size
@@ -311,7 +305,9 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       size_t existing_total_len = 1; // Type
 
       if (existing_type == Type::String || existing_type == Type::Bytes) {
-        std::memcpy(&existing_vlen, m_data.data() + vo + 1, 4);
+        uint32_t raw_vlen = 0;
+        std::memcpy(&raw_vlen, m_data.data() + vo + 1, 4);
+        existing_vlen = raw_vlen;
         existing_total_len += 4 + existing_vlen; // Type + Size + Data
         if (existing_type == Type::String)
           existing_total_len++; // Null
@@ -326,7 +322,9 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
         existing_total_len += existing_vlen;
       }
 
-      if (existing_total_len == val_total_len) {
+      if (type != Type::Object && type != Type::Array &&
+          existing_type != Type::Object && existing_type != Type::Array &&
+          existing_total_len == val_total_len) {
         // Overwrite in place!
         size_t vstart = vo + 1;                  // Skip Type
         m_data[vo] = static_cast<uint8_t>(type); // Update Type
@@ -358,10 +356,9 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
 
       // Write Key
       if (!is_append) {
-        m_data[start] =
-            static_cast<uint8_t>((key.size() + 1) << 2); // Simplified tag
-        std::memcpy(m_data.data() + start + 1, key.data(), key.size());
-        m_data[start + 1 + key.size()] = 0; // Null Check
+        size_t tb = encode_key_tag(m_data.data() + start, key.size());
+        std::memcpy(m_data.data() + start + tb, key.data(), key.size());
+        m_data[start + tb + key.size()] = 0; // Null terminator
       }
 
       size_t vstart = start + klen;
@@ -403,10 +400,9 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
 
       // Write Key
       if (!is_append) {
-        m_data[start] =
-            static_cast<uint8_t>((key.size() + 1) << 2); // Simplified tag
-        std::memcpy(m_data.data() + start + 1, key.data(), key.size());
-        m_data[start + 1 + key.size()] = 0; // Null Check
+        size_t tb = encode_key_tag(m_data.data() + start, key.size());
+        std::memcpy(m_data.data() + start + tb, key.data(), key.size());
+        m_data[start + tb + key.size()] = 0; // Null terminator
       }
 
       size_t vstart = start + klen;
@@ -481,16 +477,16 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
       // Skip key (since we confirmed match, we just skip it to get value)
       size_t vo = kv_ofs;
       if (!is_array_op) {
-        if (vo >= m_data.size()) {
+        uint32_t klen = 0;
+        size_t tag_bytes = 0;
+        if (!decode_key_tag(m_data.data(), m_data.size(), vo, klen, tag_bytes)) {
           type = Type::Invalid;
           return nullptr;
         }
-        uint8_t tag = m_data[vo];
-        uint32_t klen = (tag >> 2);
-        vo += 1 + klen;
+        vo += tag_bytes + klen;
       }
 
-      if (vo + 1 >= m_data.size()) {
+      if (vo >= m_data.size()) {
         type = Type::Invalid;
         return nullptr;
       }
@@ -508,13 +504,7 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
 }
 
 void Buffer::set_null(size_t ofs, std::string_view key) {
-#ifndef LITE3CPP_DISABLE_OBSERVABILITY
-  auto start = std::chrono::high_resolution_clock::now();
-#endif
   set_impl(ofs, key, utils::djb2_hash(key), 0, nullptr, Type::Null);
-#ifndef LITE3CPP_DISABLE_OBSERVABILITY
-// ... logging omitted for brevity ...
-#endif
 }
 void Buffer::set_i64(size_t ofs, std::string_view key, int64_t value) {
   set_impl(ofs, key, utils::djb2_hash(key), sizeof(value), &value, Type::Int64);
@@ -579,31 +569,23 @@ std::string_view Buffer::get_str(size_t ofs, std::string_view key) const {
 size_t Buffer::set_obj(size_t ofs, std::string_view key) {
   size_t o =
       set_impl(ofs, key, utils::djb2_hash(key), 0, nullptr, Type::Object);
+  size_t pos = o + 1;
   ensure_capacity(config::node_size); // Ensure space for initialization
-  // But O points to VALUE. We need to init NODE there?
-  // Actually `set_impl` wrote [Type][Node stuff? No, 0 data].
-  // Value for Object is the Node.
-  // So o points to [Type], o+1 points to Node data.
-  std::memset(m_data.data() + o + 1, 0,
-              config::node_size - 8); // rough clear
-  MutableNodeView n(reinterpret_cast<PackedNodeLayout *>(
-      m_data.data() + o + 1)); // offset adjustment?
-  // Node is 96 bytes. `type_sizes[Object]` accounts for overhead.
-  // Correct logic: `o` is value start.
-  // `o+1` is Node start.
+  std::memset(m_data.data() + pos, 0, config::node_size);
+  MutableNodeView n(reinterpret_cast<PackedNodeLayout *>(m_data.data() + pos));
   n.set_gen_type(1, Type::Object);
   m_used_size += config::node_size;
-  return o + 1; // Return Offset of the Node
+  return pos; // Return Offset of the Node
 }
 size_t Buffer::set_arr(size_t ofs, std::string_view key) {
   size_t o = set_impl(ofs, key, utils::djb2_hash(key), 0, nullptr, Type::Array);
+  size_t pos = o + 1;
   ensure_capacity(config::node_size);
-  std::memset(m_data.data() + o + 1, 0, config::node_size - 8);
-  MutableNodeView n(
-      reinterpret_cast<PackedNodeLayout *>(m_data.data() + o + 1));
+  std::memset(m_data.data() + pos, 0, config::node_size);
+  MutableNodeView n(reinterpret_cast<PackedNodeLayout *>(m_data.data() + pos));
   n.set_gen_type(1, Type::Array);
   m_used_size += config::node_size;
-  return o + 1;
+  return pos;
 }
 
 // Array appends - stub or implement
@@ -650,11 +632,11 @@ size_t Buffer::arr_append_obj(size_t ofs) {
           .size();
   size_t o = set_impl(ofs, {}, static_cast<uint32_t>(idx), 0, nullptr,
                       Type::Object, true);
+  size_t pos = o + 1;
 
   ensure_capacity(config::node_size);
-  std::memset(m_data.data() + o + 1, 0, config::node_size - 8);
-  MutableNodeView n(
-      reinterpret_cast<PackedNodeLayout *>(m_data.data() + o + 1));
+  std::memset(m_data.data() + pos, 0, config::node_size);
+  MutableNodeView n(reinterpret_cast<PackedNodeLayout *>(m_data.data() + pos));
   n.set_gen_type(1, Type::Object);
   m_used_size += config::node_size;
 
@@ -663,7 +645,7 @@ size_t Buffer::arr_append_obj(size_t ofs) {
       reinterpret_cast<PackedNodeLayout *>(m_data.data() + ofs));
   arr.set_size(static_cast<uint32_t>(idx + 1));
 
-  return o + 1;
+  return pos;
 }
 size_t Buffer::arr_append_arr(size_t ofs) {
   size_t idx =
@@ -671,11 +653,11 @@ size_t Buffer::arr_append_arr(size_t ofs) {
           .size();
   size_t o = set_impl(ofs, {}, static_cast<uint32_t>(idx), 0, nullptr,
                       Type::Array, true);
+  size_t pos = o + 1;
 
   ensure_capacity(config::node_size);
-  std::memset(m_data.data() + o + 1, 0, config::node_size - 8);
-  MutableNodeView n(
-      reinterpret_cast<PackedNodeLayout *>(m_data.data() + o + 1));
+  std::memset(m_data.data() + pos, 0, config::node_size);
+  MutableNodeView n(reinterpret_cast<PackedNodeLayout *>(m_data.data() + pos));
   n.set_gen_type(1, Type::Array);
   m_used_size += config::node_size;
 
@@ -683,7 +665,7 @@ size_t Buffer::arr_append_arr(size_t ofs) {
       reinterpret_cast<PackedNodeLayout *>(m_data.data() + ofs));
   arr.set_size(static_cast<uint32_t>(idx + 1));
 
-  return o + 1;
+  return pos;
 }
 
 // Array Getters
