@@ -247,16 +247,18 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
   size_t parent_ofs = SIZE_MAX;
   size_t node_ofs = ofs;
 
-  // Path stack for size updates (simplified: usually depth < 16)
-  size_t path[16];
+  // Path stack for ancestor tracking (allows root growth beyond tree_height_max)
+  constexpr int max_path_depth = static_cast<int>(config::tree_height_max) + 4;
+  size_t path[max_path_depth];
   int path_depth = 0;
 
   while (true) {
     if (node_ofs > m_used_size - config::node_size) {
       throw exception("Corrupt B-tree node offset");
     }
-    if (path_depth > static_cast<int>(config::tree_height_max) + 1 ||
-        path_depth >= 16) {
+    if (path_depth < 0 ||
+        path_depth > static_cast<int>(config::tree_height_max) + 2 ||
+        path_depth >= max_path_depth) {
       throw exception("Corrupt B-tree: max height exceeded");
     }
     path[path_depth++] = node_ofs;
@@ -318,9 +320,8 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
 
         parent_ofs = node_ofs;
         node_ofs = moves_to_ofs;
-        // Restart loop on new child to continue split logic check/split
-        path[path_depth - 1] = parent_ofs; // Correct stack
-        path_depth--;                      // Will push node_ofs again
+        // Keep parent_ofs at path[path_depth - 1]; next iteration pushes moves_to_ofs
+        path[path_depth - 1] = parent_ofs;
         continue;
       }
 
@@ -394,8 +395,9 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
         node_ofs = sibling_ofs;
         path_depth--;
       } else if (cmp_med == 0) {
-        node_ofs = parent_ofs;
         path_depth -= 2;
+        node_ofs = parent_ofs;
+        parent_ofs = (path_depth > 0) ? path[path_depth - 1] : SIZE_MAX;
       } else {
         path_depth--;
       }

@@ -796,3 +796,65 @@ TEST_F(BufferTest, MalformedAndTruncatedViewsThrowCleanlyWithoutMemoryCorruption
   }
 }
 
+TEST_F(BufferTest, UpdateEveryKeyOnFull7KeyViewAndMultiLevelTree) {
+  lite3cpp::Buffer src7;
+  src7.init_object();
+  for (size_t k = 0; k < lite3cpp::config::node_key_count; ++k) {
+    src7.set_i64(0, "k_" + std::to_string(k), static_cast<int64_t>(k * 100));
+  }
+
+  // Updating each key on a fresh 7-key view hits Root Split + Normal Split for all 7 positions (including mid = 3)
+  for (size_t target = 0; target < lite3cpp::config::node_key_count; ++target) {
+    lite3cpp::Buffer v_inplace = lite3cpp::Buffer::from_view(src7.data(), src7.size());
+    v_inplace.set_i64(0, "k_" + std::to_string(target), 9000 + static_cast<int64_t>(target));
+    EXPECT_FALSE(v_inplace.is_view());
+
+    size_t seen = 0;
+    for (auto it = v_inplace.begin(0); it != v_inplace.end(0); ++it) {
+      ++seen;
+    }
+    EXPECT_EQ(seen, lite3cpp::config::node_key_count);
+
+    for (size_t k = 0; k < lite3cpp::config::node_key_count; ++k) {
+      const int64_t expected =
+          (k == target) ? (9000 + static_cast<int64_t>(target)) : static_cast<int64_t>(k * 100);
+      EXPECT_EQ(v_inplace.get_i64(0, "k_" + std::to_string(k)), expected);
+      EXPECT_EQ(src7.get_i64(0, "k_" + std::to_string(k)), static_cast<int64_t>(k * 100));
+    }
+
+    // Also test non-in-place (type/length change) update on the fresh 7-key view
+    lite3cpp::Buffer v_append = lite3cpp::Buffer::from_view(src7.data(), src7.size());
+    std::string new_val = "updated_payload_" + std::to_string(target);
+    v_append.set_str(0, "k_" + std::to_string(target), new_val);
+    EXPECT_EQ(v_append.get_str(0, "k_" + std::to_string(target)), new_val);
+  }
+
+  // Multi-level tree (~64 keys): test updating every single key both on fresh views and cumulatively
+  constexpr int kNumKeys = 64;
+  lite3cpp::Buffer big_src;
+  big_src.init_object();
+  for (int i = 0; i < kNumKeys; ++i) {
+    big_src.set_i64(0, "tree_key_" + std::to_string(i), i);
+  }
+
+  for (int target = 0; target < kNumKeys; ++target) {
+    lite3cpp::Buffer v = lite3cpp::Buffer::from_view(big_src.data(), big_src.size());
+    v.set_i64(0, "tree_key_" + std::to_string(target), 50000 + target);
+    EXPECT_EQ(v.get_i64(0, "tree_key_" + std::to_string(target)), 50000 + target);
+  }
+
+  lite3cpp::Buffer cumulative = lite3cpp::Buffer::from_view(big_src.data(), big_src.size());
+  for (int i = 0; i < kNumKeys; ++i) {
+    cumulative.set_i64(0, "tree_key_" + std::to_string(i), 100000 + i);
+  }
+  size_t total_seen = 0;
+  for (auto it = cumulative.begin(0); it != cumulative.end(0); ++it) {
+    ++total_seen;
+  }
+  EXPECT_EQ(total_seen, static_cast<size_t>(kNumKeys));
+  for (int i = 0; i < kNumKeys; ++i) {
+    EXPECT_EQ(cumulative.get_i64(0, "tree_key_" + std::to_string(i)), 100000 + i);
+    EXPECT_EQ(big_src.get_i64(0, "tree_key_" + std::to_string(i)), i);
+  }
+}
+
