@@ -1117,12 +1117,41 @@ TEST_F(BufferTest, ArrayIteratorTraversesEmptySingleLeafSplitAnd1000ElementsInOr
   ASSERT_NE(invalid_it, parent.end(nested_arr));
   parent.arr_append_i64(nested_arr, 999);
   EXPECT_THROW({ (void)*invalid_it; }, lite3cpp::exception);
+  EXPECT_THROW({ ++invalid_it; }, lite3cpp::exception);
 
   parent.shrink_to_fit();
   auto root_it = parent.begin(0);
   ASSERT_NE(root_it, parent.end(0));
   parent.arr_append_str(nested_arr, std::string(4096, 'z'));
   EXPECT_THROW({ (void)root_it.key(); }, lite3cpp::exception);
+  EXPECT_THROW({ ++root_it; }, lite3cpp::exception);
+
+  // Symmetric operator== / operator!= when comparing stale vs post-mutation iterator
+  lite3cpp::Buffer sym_buf;
+  sym_buf.init_object();
+  sym_buf.set_i64(0, "a", 1);
+  auto stale_it = sym_buf.begin(0);
+  sym_buf.set_i64(0, "b", 2);
+  auto fresh_it = sym_buf.begin(0);
+  EXPECT_FALSE(stale_it == fresh_it);
+  EXPECT_FALSE(fresh_it == stale_it);
+  EXPECT_TRUE(stale_it != fresh_it);
+  EXPECT_TRUE(fresh_it != stale_it);
+  EXPECT_THROW({ ++stale_it; }, lite3cpp::exception);
+
+  // Pre-sized buffer clear() + init_object() reuse invalidation (m_initial_bound_size check)
+  lite3cpp::Buffer reused(4096);
+  reused.init_object();
+  reused.set_i64(0, "k1", 10);
+  auto reused_it = reused.begin(0);
+  reused.clear();
+  reused.init_object();
+  reused.set_str(0, "longer_key", "different_bound_size_same_gen_2");
+  ASSERT_EQ(reused.size() != 0u, true);
+  EXPECT_FALSE(reused_it == reused.begin(0));
+  EXPECT_FALSE(reused.begin(0) == reused_it);
+  EXPECT_THROW({ (void)*reused_it; }, lite3cpp::exception);
+  EXPECT_THROW({ ++reused_it; }, lite3cpp::exception);
 }
 
 

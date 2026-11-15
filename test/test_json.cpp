@@ -1,4 +1,5 @@
 #include "buffer.hpp"
+#include "exception.hpp"
 #include "json.hpp"
 #include "utils/hex.hpp"
 #include <cstddef>
@@ -86,6 +87,7 @@ TEST(JsonTest, LargeMixedArray1000ElementsAndBytesHexToJson) {
   buf.init_object();
   const std::byte bin[] = {std::byte{0x00}, std::byte{0x0A}, std::byte{0xBC}, std::byte{0xFF}};
   buf.set_bytes(0, "sig", bin);
+  buf.set_bytes(0, "empty_sig", std::span<const std::byte>{});
 
   size_t arr = buf.set_arr(0, "events");
   for (int i = 0; i < 1000; ++i) {
@@ -103,9 +105,11 @@ TEST(JsonTest, LargeMixedArray1000ElementsAndBytesHexToJson) {
 
   std::string json_str = lite3cpp::lite3_json::to_json_string(buf, 0);
   EXPECT_NE(json_str.find(R"("sig":"000abcff")"), std::string::npos);
+  EXPECT_NE(json_str.find(R"("empty_sig":"")"), std::string::npos);
 
   lite3cpp::Buffer roundtrip = lite3cpp::lite3_json::from_json_string(json_str);
   EXPECT_EQ(roundtrip.get_str(0, "sig"), "000abcff");
+  EXPECT_TRUE(roundtrip.get_str(0, "empty_sig").empty());
   size_t rt_arr = roundtrip.get_arr(0, "events");
   EXPECT_EQ(roundtrip.arr_get_i64(rt_arr, 0), 0);
   EXPECT_EQ(roundtrip.arr_get_str(rt_arr, 1), "ev_1");
@@ -147,4 +151,28 @@ TEST(JsonTest, LargeMixedArray1000ElementsAndBytesHexToJson) {
   EXPECT_EQ(root_rt.get_i64(root_rt.arr_get_obj(0, 4), "v"), 4);
   EXPECT_EQ(root_rt.arr_get_i64(0, 995), 1990);
   EXPECT_EQ(root_rt.get_i64(root_rt.arr_get_obj(0, 999), "v"), 999);
+
+  // Corrupt nested node header type mismatch (Type::Array tag -> Type::Object node and vice versa)
+  {
+    lite3cpp::Buffer valid_nested;
+    valid_nested.init_object();
+    size_t child_arr = valid_nested.set_arr(0, "arr");
+    size_t child_obj = valid_nested.set_obj(0, "obj");
+
+    std::vector<uint8_t> bad_arr(valid_nested.data(), valid_nested.data() + valid_nested.size());
+    lite3cpp::MutableNodeView(reinterpret_cast<lite3cpp::PackedNodeLayout*>(bad_arr.data() + child_arr))
+        .set_gen_type(1, lite3cpp::Type::Object);
+    EXPECT_THROW(
+        (void)lite3cpp::lite3_json::to_json_string(
+            lite3cpp::Buffer::from_view(bad_arr.data(), bad_arr.size()), 0),
+        lite3cpp::exception);
+
+    std::vector<uint8_t> bad_obj(valid_nested.data(), valid_nested.data() + valid_nested.size());
+    lite3cpp::MutableNodeView(reinterpret_cast<lite3cpp::PackedNodeLayout*>(bad_obj.data() + child_obj))
+        .set_gen_type(1, lite3cpp::Type::Array);
+    EXPECT_THROW(
+        (void)lite3cpp::lite3_json::to_json_string(
+            lite3cpp::Buffer::from_view(bad_obj.data(), bad_obj.size()), 0),
+        lite3cpp::exception);
+  }
 }

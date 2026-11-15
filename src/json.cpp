@@ -69,7 +69,7 @@ std::string to_json_string(const Buffer &buffer, size_t ofs) {
       Type root_type = node.type();
       if (root_type == Type::Object) {
           root = yyjson_mut_obj(doc);
-          for (auto it = buffer.begin(0); it != buffer.end(0); ++it) {
+          for (auto it = buffer.begin(0), end = buffer.end(0); it != end; ++it) {
               yyjson_mut_val *kval =
                   yyjson_mut_strncpy(doc, it->key.data(), it->key.size());
               yyjson_mut_obj_add(
@@ -77,7 +77,7 @@ std::string to_json_string(const Buffer &buffer, size_t ofs) {
           }
       } else if (root_type == Type::Array) {
           root = yyjson_mut_arr(doc);
-          for (auto it = buffer.begin(0); it != buffer.end(0); ++it) {
+          for (auto it = buffer.begin(0), end = buffer.end(0); it != end; ++it) {
               yyjson_mut_arr_add_val(
                   root, to_yyjson_val(buffer, it->value_offset, doc, 1));
           }
@@ -294,8 +294,14 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
     if (rem < config::node_size) {
       throw lite3cpp::exception("Corrupt nested node");
     }
+    NodeView nested_node(
+        reinterpret_cast<const PackedNodeLayout *>(buffer.data() + ofs + 1));
+    if (nested_node.type() != Type::Object) {
+      throw lite3cpp::exception("Corrupt nested node");
+    }
     yyjson_mut_val *obj = yyjson_mut_obj(doc);
-    for (auto it = buffer.begin(ofs + 1); it != buffer.end(ofs + 1); ++it) {
+    for (auto it = buffer.begin(ofs + 1), end = buffer.end(ofs + 1);
+         it != end; ++it) {
       yyjson_mut_val *kval =
           yyjson_mut_strncpy(doc, it->key.data(), it->key.size());
       yyjson_mut_obj_add(
@@ -307,8 +313,14 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
     if (rem < config::node_size) {
       throw lite3cpp::exception("Corrupt nested node");
     }
+    NodeView nested_node(
+        reinterpret_cast<const PackedNodeLayout *>(buffer.data() + ofs + 1));
+    if (nested_node.type() != Type::Array) {
+      throw lite3cpp::exception("Corrupt nested node");
+    }
     yyjson_mut_val *arr = yyjson_mut_arr(doc);
-    for (auto it = buffer.begin(ofs + 1); it != buffer.end(ofs + 1); ++it) {
+    for (auto it = buffer.begin(ofs + 1), end = buffer.end(ofs + 1);
+         it != end; ++it) {
       yyjson_mut_arr_add_val(
           arr, to_yyjson_val(buffer, it->value_offset, doc, depth + 1));
     }

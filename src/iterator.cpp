@@ -11,6 +11,7 @@ Iterator::Iterator(const Buffer *buffer, size_t /*ofs*/, size_t node_offset,
                    uint32_t initial_buffer_generation)
     : m_buffer(buffer),
       m_initial_data(buffer ? buffer->data() : nullptr),
+      m_initial_bound_size(buffer ? buffer->bound_size() : 0),
       m_initial_buffer_generation(initial_buffer_generation),
       m_initial_node_generation(0),
       m_depth(-1),
@@ -38,7 +39,8 @@ Iterator::Iterator(const Buffer *buffer, size_t /*ofs*/, size_t node_offset,
 }
 
 bool Iterator::is_modified() const noexcept {
-  if (m_buffer->data() != m_initial_data) {
+  if (m_buffer->data() != m_initial_data ||
+      m_buffer->bound_size() != m_initial_bound_size) {
     return true;
   }
   NodeView root_node(
@@ -60,6 +62,15 @@ bool Iterator::is_modified() const noexcept {
 }
 
 Iterator &Iterator::operator++() {
+  if (m_buffer) {
+    if (m_buffer->bound_size() < sizeof(PackedNodeLayout)) {
+      throw lite3cpp::exception("Invalid iterator");
+    }
+    if (is_modified()) {
+      throw lite3cpp::exception(
+          "Iterator invalidated: Buffer modified during iteration.");
+    }
+  }
   find_next();
   return *this;
 }
@@ -89,16 +100,15 @@ std::string_view Iterator::key() const { return (**this).key; }
 bool Iterator::operator==(const Iterator &other) const {
   if (!m_buffer && !other.m_buffer)
     return true;
-  if (!m_buffer || !other.m_buffer)
+  if (m_buffer != other.m_buffer)
     return false;
 
-  if (m_buffer->bound_size() < sizeof(PackedNodeLayout))
-    return false;
-  if (is_modified()) {
+  if (m_buffer->bound_size() < sizeof(PackedNodeLayout) || is_modified() ||
+      other.is_modified()) {
     return false;
   }
 
-  return m_buffer == other.m_buffer && m_depth == other.m_depth &&
+  return m_depth == other.m_depth &&
          m_stack[m_depth].offset == other.m_stack[other.m_depth].offset &&
          m_stack[m_depth].key_index == other.m_stack[other.m_depth].key_index;
 }

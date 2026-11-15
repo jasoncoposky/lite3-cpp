@@ -34,6 +34,7 @@ namespace lite3cpp {
     private:
         const Buffer* m_buffer;
         const uint8_t* m_initial_data = nullptr;
+        size_t m_initial_bound_size = 0;
         uint32_t m_initial_buffer_generation;
         uint32_t m_initial_node_generation = 0;
 
