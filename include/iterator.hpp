@@ -33,17 +33,21 @@ namespace lite3cpp {
 
     private:
         const Buffer* m_buffer;
+        const uint8_t* m_initial_data = nullptr;
         uint32_t m_initial_buffer_generation;
-        
+        uint32_t m_initial_node_generation = 0;
+
         struct
         {
             size_t offset;
             int key_index;
         } m_stack[config::tree_height_max + 1];
         int m_depth;
+        bool m_is_array = false;
 
-        value_type m_current_value;
+        value_type m_current_value{};
 
+        bool is_modified() const noexcept;
         void find_first();
         void find_next();
     };

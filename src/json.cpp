@@ -1,14 +1,13 @@
 #include "json.hpp"
-#include "buffer.hpp" // Explicitly include buffer
+#include "buffer.hpp"
 #include "exception.hpp"
-#include "observability.hpp" // Add this
-#include "utils/hex.hpp"     // Include new hex utility
+#include "observability.hpp"
+#include "utils/hex.hpp"
 #include "yyjson.h"
-#include <chrono>      // Add this
+#include <chrono>
 #include <cstring>
 #include <memory>
-#include <string_view> // Add this
-#include <vector>
+#include <string_view>
 
 
 namespace lite3cpp {
@@ -78,49 +77,9 @@ std::string to_json_string(const Buffer &buffer, size_t ofs) {
           }
       } else if (root_type == Type::Array) {
           root = yyjson_mut_arr(doc);
-          for (uint32_t i = 0; i < node.size(); ++i) {
-              Type val_type = buffer.arr_get_type(0, i);
-              switch (val_type) {
-              case Type::Null:
-                yyjson_mut_arr_add_null(doc, root);
-                break;
-              case Type::Bool:
-                yyjson_mut_arr_add_bool(doc, root, buffer.arr_get_bool(0, i));
-                break;
-              case Type::Int64:
-                yyjson_mut_arr_add_int(doc, root, buffer.arr_get_i64(0, i));
-                break;
-              case Type::Float64:
-                yyjson_mut_arr_add_real(doc, root, buffer.arr_get_f64(0, i));
-                break;
-              case Type::String: {
-                auto str = buffer.arr_get_str(0, i);
-                yyjson_mut_arr_add_strncpy(doc, root, str.data(), str.size());
-                break;
-              }
-              case Type::Bytes: {
-                auto bytes_span = buffer.arr_get_bytes(0, i);
-                std::string hex_str;
-                for (size_t j = 0; j < bytes_span.size(); ++j) {
-                  char buf[3];
-                  snprintf(buf, sizeof(buf), "%02x",
-                           static_cast<unsigned char>(bytes_span[j]));
-                  hex_str += buf;
-                }
-                yyjson_mut_arr_add_str(doc, root, hex_str.c_str());
-                break;
-              }
-              case Type::Object:
-                yyjson_mut_arr_add_val(
-                    root, to_yyjson_val(buffer, buffer.arr_get_obj(0, i) - 1, doc, 1));
-                break;
-              case Type::Array:
-                yyjson_mut_arr_add_val(
-                    root, to_yyjson_val(buffer, buffer.arr_get_arr(0, i) - 1, doc, 1));
-                break;
-              default:
-                break;
-              }
+          for (auto it = buffer.begin(0); it != buffer.end(0); ++it) {
+              yyjson_mut_arr_add_val(
+                  root, to_yyjson_val(buffer, it->value_offset, doc, 1));
           }
       } else {
           root = yyjson_mut_null(doc);
@@ -326,14 +285,9 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
     if (size > rem - sizeof(uint32_t)) {
       throw lite3cpp::exception("Corrupt bytes length");
     }
-    const uint8_t *bytes = reinterpret_cast<const uint8_t *>(
+    const auto *bytes = reinterpret_cast<const std::byte *>(
         buffer.data() + ofs + 1 + sizeof(size));
-    std::string hex_str;
-    for (uint32_t i = 0; i < size; ++i) {
-      char buf[3];
-      snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned char>(bytes[i]));
-      hex_str += buf;
-    }
+    std::string hex_str = utils::hex_encode({bytes, size});
     return yyjson_mut_strncpy(doc, hex_str.data(), hex_str.size());
   }
   case Type::Object: {
@@ -354,53 +308,9 @@ yyjson_mut_val *to_yyjson_val(const Buffer &buffer, size_t ofs,
       throw lite3cpp::exception("Corrupt nested node");
     }
     yyjson_mut_val *arr = yyjson_mut_arr(doc);
-    NodeView node(
-        reinterpret_cast<const PackedNodeLayout *>(buffer.data() + ofs + 1));
-    for (uint32_t i = 0; i < node.size(); ++i) {
-      Type value_type = buffer.arr_get_type(ofs + 1, i);
-      switch (value_type) {
-      case Type::Null:
-        yyjson_mut_arr_add_null(doc, arr);
-        break;
-      case Type::Bool:
-        yyjson_mut_arr_add_bool(doc, arr, buffer.arr_get_bool(ofs + 1, i));
-        break;
-      case Type::Int64:
-        yyjson_mut_arr_add_int(doc, arr, buffer.arr_get_i64(ofs + 1, i));
-        break;
-      case Type::Float64:
-        yyjson_mut_arr_add_real(doc, arr, buffer.arr_get_f64(ofs + 1, i));
-        break;
-      case Type::String: {
-        auto str = buffer.arr_get_str(ofs + 1, i);
-        yyjson_mut_arr_add_strncpy(doc, arr, str.data(), str.size());
-        break;
-      }
-      case Type::Bytes: {
-        auto bytes_span = buffer.arr_get_bytes(ofs + 1, i);
-        std::string hex_str;
-        for (size_t j = 0; j < bytes_span.size(); ++j) {
-          char buf[3];
-          snprintf(buf, sizeof(buf), "%02x",
-                   static_cast<unsigned char>(bytes_span[j]));
-          hex_str += buf;
-        }
-        yyjson_mut_arr_add_str(doc, arr, hex_str.c_str());
-        break;
-      }
-      case Type::Object:
-        yyjson_mut_arr_add_val(
-            arr, to_yyjson_val(buffer, buffer.arr_get_obj(ofs + 1, i) - 1, doc,
-                               depth + 1));
-        break;
-      case Type::Array:
-        yyjson_mut_arr_add_val(
-            arr, to_yyjson_val(buffer, buffer.arr_get_arr(ofs + 1, i) - 1, doc,
-                               depth + 1));
-        break;
-      default:
-        break;
-      }
+    for (auto it = buffer.begin(ofs + 1); it != buffer.end(ofs + 1); ++it) {
+      yyjson_mut_arr_add_val(
+          arr, to_yyjson_val(buffer, it->value_offset, doc, depth + 1));
     }
     return arr;
   }

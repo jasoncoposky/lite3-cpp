@@ -137,9 +137,9 @@ TEST_F(BufferTest, BTreeSplit) {
   buffer.init_object();
 
   // Insert enough keys to trigger a split
-  for (int i = 0; i < lite3cpp::config::node_key_count + 1; ++i) {
+  for (size_t i = 0; i < lite3cpp::config::node_key_count + 1; ++i) {
     std::string key = "key" + std::to_string(i);
-    buffer.set_i64(0, key, i);
+    buffer.set_i64(0, key, static_cast<int64_t>(i));
   }
 
 #ifndef LITE3CPP_DISABLE_OBSERVABILITY
@@ -156,10 +156,10 @@ TEST_F(BufferTest, BTreeSplit) {
 #endif
 
   // Verify that all keys can be retrieved
-  for (int i = 0; i < lite3cpp::config::node_key_count + 1; ++i) {
+  for (size_t i = 0; i < lite3cpp::config::node_key_count + 1; ++i) {
     std::string key = "key" + std::to_string(i);
     int64_t value = buffer.get_i64(0, key);
-    ASSERT_EQ(value, i);
+    ASSERT_EQ(value, static_cast<int64_t>(i));
   }
   // The logger is reset in TearDown()
   // lite3cpp::set_logger(nullptr); // Reset logger
@@ -1060,4 +1060,69 @@ TEST_F(BufferTest, SetBytesUninitializedAndCapacityRetentionAcrossClearAndReleas
   EXPECT_EQ(released.data(), pre_release_ptr); // O(1) move preserved!
   EXPECT_EQ(released.size(), expected_used);   // Trimmed to m_used_size!
 }
+
+TEST_F(BufferTest, ArrayIteratorTraversesEmptySingleLeafSplitAnd1000ElementsInOrder) {
+  for (size_t count_target : {size_t{0}, size_t{1}, size_t{7}, size_t{8}, size_t{1000}}) {
+    lite3cpp::Buffer arr;
+    arr.init_array();
+    for (size_t i = 0; i < count_target; ++i) {
+      arr.arr_append_i64(0, static_cast<int64_t>(i * 3 + 7));
+    }
+
+    size_t seen = 0;
+    for (auto it = arr.begin(0); it != arr.end(0); ++it) {
+      EXPECT_TRUE(it->key.empty());
+      EXPECT_EQ(it->value_type, lite3cpp::Type::Int64);
+      int64_t v = 0;
+      std::memcpy(&v, arr.data() + it->value_offset + 1, sizeof(int64_t));
+      EXPECT_EQ(v, static_cast<int64_t>(seen * 3 + 7));
+      ++seen;
+    }
+    EXPECT_EQ(seen, count_target);
+
+    // Also verify zero-copy view array iteration yields identical elements
+    if (count_target > 0) {
+      lite3cpp::Buffer view = lite3cpp::Buffer::from_view(arr.data(), arr.size());
+      size_t view_seen = 0;
+      for (auto it = view.begin(0); it != view.end(0); ++it) {
+        EXPECT_TRUE(it.key().empty());
+        int64_t v = 0;
+        std::memcpy(&v, view.data() + it->value_offset + 1, sizeof(int64_t));
+        EXPECT_EQ(v, static_cast<int64_t>(view_seen * 3 + 7));
+        ++view_seen;
+      }
+      EXPECT_EQ(view_seen, count_target);
+      EXPECT_TRUE(view.is_view());
+    }
+  }
+
+  // Nested array iteration and generational invalidation on array append
+  lite3cpp::Buffer parent;
+  parent.init_object();
+  size_t nested_arr = parent.set_arr(0, "nested");
+  for (int i = 0; i < 25; ++i) {
+    parent.arr_append_i64(nested_arr, i * 10);
+  }
+  size_t nested_seen = 0;
+  for (auto it = parent.begin(nested_arr); it != parent.end(nested_arr); ++it) {
+    EXPECT_TRUE(it->key.empty());
+    int64_t v = 0;
+    std::memcpy(&v, parent.data() + it->value_offset + 1, sizeof(int64_t));
+    EXPECT_EQ(v, static_cast<int64_t>(nested_seen * 10));
+    ++nested_seen;
+  }
+  EXPECT_EQ(nested_seen, 25u);
+
+  auto invalid_it = parent.begin(nested_arr);
+  ASSERT_NE(invalid_it, parent.end(nested_arr));
+  parent.arr_append_i64(nested_arr, 999);
+  EXPECT_THROW({ (void)*invalid_it; }, lite3cpp::exception);
+
+  parent.shrink_to_fit();
+  auto root_it = parent.begin(0);
+  ASSERT_NE(root_it, parent.end(0));
+  parent.arr_append_str(nested_arr, std::string(4096, 'z'));
+  EXPECT_THROW({ (void)root_it.key(); }, lite3cpp::exception);
+}
+
 
