@@ -3,13 +3,9 @@
 
 namespace lite3cpp {
 
-bool Object::contains(std::string_view key) const {
-  try {
-    m_buffer->get_type(m_offset, key);
-    return true;
-  } catch (...) {
-    return false;
-  }
+bool Object::contains(HashedKey key) const noexcept {
+  return m_buffer != nullptr &&
+         m_buffer->get_type_noexcept(m_offset, key) != Type::Invalid;
 }
 
 } // namespace lite3cpp

@@ -1,13 +1,16 @@
 #include "utils/hash.hpp"
 
-namespace lite3cpp::utils {
+namespace lite3cpp {
+namespace {
 
-    uint32_t djb2_hash(std::string_view key) {
-        uint32_t hash = 5381;
-        for (char c : key) {
-            hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
-        }
-        return hash;
-    }
+using namespace lite3cpp::literals;
 
-} // namespace lite3cpp::utils
+static_assert(utils::djb2_hash("") == 5381u);
+static_assert(""_hk.hash == 5381u);
+static_assert("objPath"_hk.hash == utils::djb2_hash("objPath"));
+static_assert(utils::djb2_hash("\x80") ==
+              ((5381u << 5) + 5381u) +
+                  static_cast<uint32_t>(static_cast<int>('\x80')));
+
+} // namespace
+} // namespace lite3cpp

@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -46,15 +47,17 @@ public:
   void init_object();
   void init_array();
 
-  void set_null(size_t ofs, std::string_view key);
-  void set_bool(size_t ofs, std::string_view key, bool value);
-  void set_i64(size_t ofs, std::string_view key, int64_t value);
-  void set_f64(size_t ofs, std::string_view key, double value);
-  void set_str(size_t ofs, std::string_view key, std::string_view value);
-  void set_bytes(size_t ofs, std::string_view key,
+  void set_null(size_t ofs, HashedKey key);
+  void set_bool(size_t ofs, HashedKey key, bool value);
+  void set_i64(size_t ofs, HashedKey key, int64_t value);
+  void set_f64(size_t ofs, HashedKey key, double value);
+  void set_str(size_t ofs, HashedKey key, std::string_view value);
+  void set_bytes(size_t ofs, HashedKey key,
                  std::span<const std::byte> value);
-  size_t set_obj(size_t ofs, std::string_view key);
-  size_t set_arr(size_t ofs, std::string_view key);
+  std::span<std::byte> set_bytes_uninitialized(size_t ofs, HashedKey key,
+                                               size_t len);
+  size_t set_obj(size_t ofs, HashedKey key);
+  size_t set_arr(size_t ofs, HashedKey key);
 
   void arr_append_null(size_t ofs);
   void arr_append_bool(size_t ofs, bool value);
@@ -62,16 +65,27 @@ public:
   void arr_append_f64(size_t ofs, double value);
   void arr_append_str(size_t ofs, std::string_view value);
   void arr_append_bytes(size_t ofs, std::span<const std::byte> value);
+  std::span<std::byte> arr_append_bytes_uninitialized(size_t ofs, size_t len);
   size_t arr_append_obj(size_t ofs);
   size_t arr_append_arr(size_t ofs);
 
-  bool get_bool(size_t ofs, std::string_view key) const;
-  int64_t get_i64(size_t ofs, std::string_view key) const;
-  double get_f64(size_t ofs, std::string_view key) const;
-  std::string_view get_str(size_t ofs, std::string_view key) const;
-  std::span<const std::byte> get_bytes(size_t ofs, std::string_view key) const;
-  size_t get_obj(size_t ofs, std::string_view key) const;
-  size_t get_arr(size_t ofs, std::string_view key) const;
+  bool get_bool(size_t ofs, HashedKey key) const;
+  int64_t get_i64(size_t ofs, HashedKey key) const;
+  double get_f64(size_t ofs, HashedKey key) const;
+  std::string_view get_str(size_t ofs, HashedKey key) const;
+  std::span<const std::byte> get_bytes(size_t ofs, HashedKey key) const;
+  size_t get_obj(size_t ofs, HashedKey key) const;
+  size_t get_arr(size_t ofs, HashedKey key) const;
+
+  std::optional<bool> try_get_bool(size_t ofs, HashedKey key) const noexcept;
+  std::optional<int64_t> try_get_i64(size_t ofs, HashedKey key) const noexcept;
+  std::optional<double> try_get_f64(size_t ofs, HashedKey key) const noexcept;
+  std::optional<std::string_view> try_get_str(size_t ofs,
+                                              HashedKey key) const noexcept;
+  std::optional<std::span<const std::byte>>
+  try_get_bytes(size_t ofs, HashedKey key) const noexcept;
+  std::optional<size_t> try_get_obj(size_t ofs, HashedKey key) const noexcept;
+  std::optional<size_t> try_get_arr(size_t ofs, HashedKey key) const noexcept;
 
   bool arr_get_bool(size_t ofs, uint32_t index) const;
   int64_t arr_get_i64(size_t ofs, uint32_t index) const;
@@ -80,8 +94,25 @@ public:
   std::span<const std::byte> arr_get_bytes(size_t ofs, uint32_t index) const;
   size_t arr_get_obj(size_t ofs, uint32_t index) const;
   size_t arr_get_arr(size_t ofs, uint32_t index) const;
+
+  std::optional<bool> arr_try_get_bool(size_t ofs,
+                                       uint32_t index) const noexcept;
+  std::optional<int64_t> arr_try_get_i64(size_t ofs,
+                                         uint32_t index) const noexcept;
+  std::optional<double> arr_try_get_f64(size_t ofs,
+                                        uint32_t index) const noexcept;
+  std::optional<std::string_view> arr_try_get_str(size_t ofs,
+                                                  uint32_t index) const noexcept;
+  std::optional<std::span<const std::byte>>
+  arr_try_get_bytes(size_t ofs, uint32_t index) const noexcept;
+  std::optional<size_t> arr_try_get_obj(size_t ofs,
+                                        uint32_t index) const noexcept;
+  std::optional<size_t> arr_try_get_arr(size_t ofs,
+                                        uint32_t index) const noexcept;
+
   Type arr_get_type(size_t ofs, uint32_t index) const;
-  Type get_type(size_t ofs, std::string_view key) const;
+  Type get_type(size_t ofs, HashedKey key) const;
+  Type get_type_noexcept(size_t ofs, HashedKey key) const noexcept;
 
   // Access to raw data (read-only)
   const uint8_t *data() const noexcept {
@@ -109,7 +140,6 @@ public:
   }
 
   void clear() noexcept {
-    m_data.clear();
     m_ext_data = nullptr;
     m_used_size = 0;
   }
@@ -148,12 +178,17 @@ private:
   // Initializer helper
   void init_structure(Type type);
 
-  // These are kept from the original private section
-  void arr_append_impl(size_t ofs, size_t val_len, const void *val_ptr,
-                       Type type);
+  size_t arr_append_impl(size_t ofs, size_t val_len, const void *val_ptr,
+                         Type type);
   const std::byte *get_impl(size_t ofs, std::string_view key, uint32_t hash,
                             Type &type, bool is_array_op = false) const;
+  const std::byte *get_impl_noexcept(size_t ofs, std::string_view key,
+                                     uint32_t hash, Type &type,
+                                     bool is_array_op = false,
+                                     bool *max_height_exceeded = nullptr) const noexcept;
   const std::byte *arr_get_impl(size_t ofs, uint32_t index, Type &type) const;
+  const std::byte *arr_get_impl_noexcept(size_t ofs, uint32_t index,
+                                         Type &type) const noexcept;
 
   size_t bound_size() const noexcept { return m_used_size; }
   void materialize_if_view();

@@ -1,4 +1,5 @@
 #include "buffer.hpp"
+#include "document.hpp"
 #include "exception.hpp" // Added
 #include "json.hpp"
 #include "observability.hpp"
@@ -174,7 +175,7 @@ TEST_F(BufferTest, IteratorGenerationalSafety) {
   // Modify the buffer
   buffer.set_i64(0, "key3", 3);
 
-  ASSERT_THROW({ auto val = *it; }, lite3cpp::exception);
+  ASSERT_THROW({ (void)*it; }, lite3cpp::exception);
   ASSERT_THROW({ (void)it.key(); }, lite3cpp::exception);
 }
 
@@ -856,5 +857,207 @@ TEST_F(BufferTest, UpdateEveryKeyOnFull7KeyViewAndMultiLevelTree) {
     EXPECT_EQ(cumulative.get_i64(0, "tree_key_" + std::to_string(i)), 100000 + i);
     EXPECT_EQ(big_src.get_i64(0, "tree_key_" + std::to_string(i)), i);
   }
+}
+
+TEST_F(BufferTest, ConstexprHashedKeyMatchesLegacySignedCharDjb2AndConversions) {
+  using namespace lite3cpp::literals;
+
+  // Compile-time evaluation guarantees
+  constexpr uint32_t h_empty = lite3cpp::utils::djb2_hash("");
+  static_assert(h_empty == 5381u);
+  constexpr auto hk_lit = "objPath"_hk;
+  static_assert(hk_lit.key == "objPath");
+  static_assert(hk_lit.hash == lite3cpp::utils::djb2_hash("objPath"));
+
+  // Verify exact signed-char two's-complement parity across all byte values 0x00..0xFF
+  auto legacy_signed_djb2 = [](std::string_view sv) -> uint32_t {
+    uint32_t h = 5381;
+    for (char c : sv) {
+      h = static_cast<uint32_t>(
+          static_cast<uint64_t>((h << 5) + h) +
+          static_cast<uint64_t>(static_cast<uint32_t>(static_cast<int>(c))));
+    }
+    return h;
+  };
+
+  std::string all_bytes(256, '\0');
+  for (int i = 0; i < 256; ++i) {
+    all_bytes[static_cast<size_t>(i)] = static_cast<char>(static_cast<unsigned char>(i));
+  }
+  EXPECT_EQ(lite3cpp::utils::djb2_hash(all_bytes), legacy_signed_djb2(all_bytes));
+
+  const char high_utf8[] = "\x80\xFF\xC3\xA9_irods_key";
+  EXPECT_EQ(lite3cpp::utils::djb2_hash(high_utf8), legacy_signed_djb2(high_utf8));
+
+  // Verify 1-step implicit conversion from const char*, nullptr, char[], string_view, and std::string
+  lite3cpp::HashedKey from_null(static_cast<const char*>(nullptr));
+  EXPECT_TRUE(from_null.key.empty());
+  EXPECT_EQ(from_null.hash, 5381u);
+
+  char stack_key[] = "stack_char_array";
+  std::string std_str_key = "std_string_key";
+  std::string_view sv_key = "string_view_key";
+
+  buffer.init_object();
+  buffer.set_i64(0, hk_lit, 11);
+  buffer.set_i64(0, "cstr_literal", 22);
+  buffer.set_i64(0, stack_key, 33);
+  buffer.set_i64(0, std_str_key, 44);
+  buffer.set_i64(0, sv_key, 55);
+
+  EXPECT_EQ(buffer.get_i64(0, "objPath"_hk), 11);
+  EXPECT_EQ(buffer.get_i64(0, "cstr_literal"), 22);
+  EXPECT_EQ(buffer.get_i64(0, stack_key), 33);
+  EXPECT_EQ(buffer.get_i64(0, std_str_key), 44);
+  EXPECT_EQ(buffer.get_i64(0, sv_key), 55);
+}
+
+TEST_F(BufferTest, TryGetSinglePassHitMissWrongTypeAndCorruptNoexcept) {
+  using namespace lite3cpp::literals;
+
+  buffer.init_object();
+  buffer.set_null(0, "k_null"_hk);
+  buffer.set_bool(0, "k_bool"_hk, true);
+  buffer.set_i64(0, "k_i64"_hk, -9876543210LL);
+  buffer.set_f64(0, "k_f64"_hk, 2.718281828);
+  buffer.set_str(0, "k_str"_hk, "single_pass");
+  const std::byte raw[] = {std::byte{0x01}, std::byte{0xFE}, std::byte{0x42}};
+  buffer.set_bytes(0, "k_bytes"_hk, raw);
+  size_t sub_obj = buffer.set_obj(0, "k_obj"_hk);
+  buffer.set_i64(sub_obj, "inner"_hk, 77);
+  size_t sub_arr = buffer.set_arr(0, "k_arr"_hk);
+  buffer.arr_append_null(sub_arr);
+  buffer.arr_append_bool(sub_arr, false);
+  buffer.arr_append_i64(sub_arr, 1234);
+  buffer.arr_append_f64(sub_arr, 6.25);
+  buffer.arr_append_str(sub_arr, "arr_elem");
+  buffer.arr_append_bytes(sub_arr, raw);
+  size_t arr_obj = buffer.arr_append_obj(sub_arr);
+  buffer.set_str(arr_obj, "ok"_hk, "yes");
+  size_t arr_nested = buffer.arr_append_arr(sub_arr);
+  buffer.arr_append_i64(arr_nested, 9);
+
+  // Direct hits
+  EXPECT_EQ(buffer.try_get_bool(0, "k_bool"_hk), std::optional<bool>{true});
+  EXPECT_EQ(buffer.try_get_i64(0, "k_i64"_hk), std::optional<int64_t>{-9876543210LL});
+  ASSERT_TRUE(buffer.try_get_f64(0, "k_f64"_hk).has_value());
+  EXPECT_DOUBLE_EQ(*buffer.try_get_f64(0, "k_f64"_hk), 2.718281828);
+  EXPECT_EQ(buffer.try_get_str(0, "k_str"_hk), std::optional<std::string_view>{"single_pass"});
+  ASSERT_TRUE(buffer.try_get_bytes(0, "k_bytes"_hk).has_value());
+  EXPECT_EQ(buffer.try_get_bytes(0, "k_bytes"_hk)->size(), 3u);
+  ASSERT_TRUE(buffer.try_get_obj(0, "k_obj"_hk).has_value());
+  EXPECT_EQ(buffer.try_get_i64(*buffer.try_get_obj(0, "k_obj"_hk), "inner"_hk), std::optional<int64_t>{77});
+  ASSERT_TRUE(buffer.try_get_arr(0, "k_arr"_hk).has_value());
+
+  // Missing keys & wrong types return std::nullopt without throwing
+  EXPECT_FALSE(buffer.try_get_i64(0, "missing"_hk).has_value());
+  EXPECT_FALSE(buffer.try_get_str(0, "k_null"_hk).has_value());
+  EXPECT_FALSE(buffer.try_get_i64(0, "k_str"_hk).has_value());
+  EXPECT_FALSE(buffer.try_get_str(0, "k_i64"_hk).has_value());
+  EXPECT_FALSE(buffer.try_get_obj(0, "k_arr"_hk).has_value());
+  EXPECT_FALSE(buffer.try_get_arr(0, "k_obj"_hk).has_value());
+
+  // Array try_get_* hits, misses, and type mismatches
+  EXPECT_FALSE(buffer.arr_try_get_i64(sub_arr, 0).has_value()); // Null element
+  EXPECT_EQ(buffer.arr_try_get_bool(sub_arr, 1), std::optional<bool>{false});
+  EXPECT_EQ(buffer.arr_try_get_i64(sub_arr, 2), std::optional<int64_t>{1234});
+  EXPECT_DOUBLE_EQ(*buffer.arr_try_get_f64(sub_arr, 3), 6.25);
+  EXPECT_EQ(buffer.arr_try_get_str(sub_arr, 4), std::optional<std::string_view>{"arr_elem"});
+  EXPECT_EQ(buffer.arr_try_get_bytes(sub_arr, 5)->size(), 3u);
+  ASSERT_TRUE(buffer.arr_try_get_obj(sub_arr, 6).has_value());
+  EXPECT_EQ(buffer.try_get_str(*buffer.arr_try_get_obj(sub_arr, 6), "ok"_hk), std::optional<std::string_view>{"yes"});
+  ASSERT_TRUE(buffer.arr_try_get_arr(sub_arr, 7).has_value());
+  EXPECT_EQ(buffer.arr_try_get_i64(*buffer.arr_try_get_arr(sub_arr, 7), 0), std::optional<int64_t>{9});
+  EXPECT_FALSE(buffer.arr_try_get_i64(sub_arr, 999).has_value());
+  EXPECT_FALSE(buffer.arr_try_get_str(sub_arr, 2).has_value());
+
+  // Corrupt/cyclic/truncated buffers MUST return std::nullopt (noexcept) in try_get_*
+  std::vector<uint8_t> cyclic(2 * lite3cpp::config::node_size, 0);
+  lite3cpp::MutableNodeView n0(reinterpret_cast<lite3cpp::PackedNodeLayout*>(cyclic.data()));
+  n0.set_gen_type(1, lite3cpp::Type::Object);
+  n0.set_key_count(0);
+  n0.set_child_offset(0, static_cast<uint32_t>(lite3cpp::config::node_size));
+  lite3cpp::MutableNodeView n1(
+      reinterpret_cast<lite3cpp::PackedNodeLayout*>(cyclic.data() + lite3cpp::config::node_size));
+  n1.set_gen_type(1, lite3cpp::Type::Object);
+  n1.set_key_count(0);
+  n1.set_child_offset(0, static_cast<uint32_t>(lite3cpp::config::node_size));
+
+  lite3cpp::Buffer cyclic_view = lite3cpp::Buffer::from_view(cyclic.data(), cyclic.size());
+  static_assert(noexcept(cyclic_view.try_get_i64(0, "any"_hk)));
+  EXPECT_FALSE(cyclic_view.try_get_i64(0, "any"_hk).has_value());
+
+  lite3cpp::Buffer sbuf;
+  sbuf.init_object();
+  sbuf.set_str(0, "s"_hk, "0123456789");
+  lite3cpp::Buffer trunc_view = lite3cpp::Buffer::from_view(sbuf.data(), sbuf.size() - 4);
+  EXPECT_FALSE(trunc_view.try_get_str(0, "s"_hk).has_value());
+
+  // Object::contains fixes missing-key check and accepts HashedKey
+  lite3cpp::Document doc;
+  lite3cpp::Object root = doc.root_obj();
+  root["present"] = int64_t{1};
+  doc.buffer().set_null(0, "explicit_null"_hk);
+  EXPECT_TRUE(root.contains("present"_hk));
+  EXPECT_TRUE(root.contains("explicit_null"_hk));
+  EXPECT_FALSE(root.contains("absent_key"_hk));
+}
+
+TEST_F(BufferTest, SetBytesUninitializedAndCapacityRetentionAcrossClearAndRelease) {
+  using namespace lite3cpp::literals;
+
+  // Pre-sized Buffer retains m_data.size() across clear() + init_object() with 0 reallocations
+  lite3cpp::Buffer pre_sized(8192);
+  EXPECT_EQ(pre_sized.size(), 0u);
+  EXPECT_GE(pre_sized.capacity(), 8192u);
+  const size_t initial_cap = pre_sized.capacity();
+
+  for (int iter = 0; iter < 5; ++iter) {
+    pre_sized.clear();
+    EXPECT_EQ(pre_sized.size(), 0u);
+    EXPECT_EQ(pre_sized.capacity(), initial_cap);
+
+    pre_sized.init_object();
+    const uint8_t* base_before = pre_sized.data();
+    auto span_slot = pre_sized.set_bytes_uninitialized(0, "payload"_hk, 4096);
+    ASSERT_EQ(span_slot.size(), 4096u);
+    EXPECT_EQ(pre_sized.data(), base_before); // Zero reallocation inside pre-sized capacity
+
+    for (size_t b = 0; b < span_slot.size(); ++b) {
+      span_slot[b] = static_cast<std::byte>((b + static_cast<size_t>(iter)) & 0xFFu);
+    }
+
+    auto read_back = pre_sized.try_get_bytes(0, "payload"_hk);
+    ASSERT_TRUE(read_back.has_value());
+    ASSERT_EQ(read_back->size(), 4096u);
+    EXPECT_EQ(read_back->data(), span_slot.data()); // Exact in-buffer zero-copy address
+    EXPECT_EQ((*read_back)[0], static_cast<std::byte>(iter & 0xFF));
+    EXPECT_EQ((*read_back)[4095], static_cast<std::byte>((4095 + iter) & 0xFF));
+
+    // Same-size overwrite reuses the exact same byte slot in place
+    auto overwrite_slot = pre_sized.set_bytes_uninitialized(0, "payload"_hk, 4096);
+    EXPECT_EQ(overwrite_slot.data(), span_slot.data());
+  }
+
+  // Array append uninitialized + CoW from view + O(1) release trimming
+  lite3cpp::Buffer arr_buf(2048);
+  arr_buf.init_array();
+  auto arr_slot = arr_buf.arr_append_bytes_uninitialized(0, 256);
+  ASSERT_EQ(arr_slot.size(), 256u);
+  std::memset(arr_slot.data(), 0x5A, arr_slot.size());
+  ASSERT_TRUE(arr_buf.arr_try_get_bytes(0, 0).has_value());
+  EXPECT_EQ((*arr_buf.arr_try_get_bytes(0, 0))[255], std::byte{0x5A});
+
+  lite3cpp::Buffer view = lite3cpp::Buffer::from_view(arr_buf.data(), arr_buf.size());
+  auto cow_slot = view.arr_append_bytes_uninitialized(0, 64);
+  std::memset(cow_slot.data(), 0xA5, cow_slot.size());
+  EXPECT_FALSE(view.is_view());
+  EXPECT_EQ((*view.arr_try_get_bytes(0, 1))[0], std::byte{0xA5});
+
+  const uint8_t* pre_release_ptr = pre_sized.data();
+  const size_t expected_used = pre_sized.size();
+  std::vector<uint8_t> released = pre_sized.release();
+  EXPECT_EQ(released.data(), pre_release_ptr); // O(1) move preserved!
+  EXPECT_EQ(released.size(), expected_used);   // Trimmed to m_used_size!
 }
 
