@@ -106,10 +106,11 @@ Buffer from_json_string(std::string_view json_str) {
   if (!doc) {
     throw lite3cpp::exception("Invalid JSON string provided.");
   }
+  std::unique_ptr<yyjson_doc, decltype(&yyjson_doc_free)> doc_guard(
+      doc, &yyjson_doc_free);
   yyjson_val *root = yyjson_doc_get_root(doc);
   Buffer buffer;
   from_yyjson_val(root, buffer, 0);
-  yyjson_doc_free(doc);
   return buffer;
 }
 
