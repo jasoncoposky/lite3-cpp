@@ -176,3 +176,37 @@ TEST(JsonTest, LargeMixedArray1000ElementsAndBytesHexToJson) {
         lite3cpp::exception);
   }
 }
+
+TEST(JsonTest, FromJsonStringViewNonNullTerminatedSliceAndEmpty) {
+  // Non-null-terminated substring slice inside surrounding non-JSON sentinel characters
+  const std::string backing = R"(XXX{"a":42,"nested":{"msg":"hello"},"arr":[1,2,3]}YYY)";
+  std::string_view slice(backing.data() + 3, backing.size() - 6);
+  ASSERT_EQ(slice.front(), '{');
+  ASSERT_EQ(slice.back(), '}');
+  // Confirm byte immediately past slice is 'Y' (not '\0')
+  ASSERT_EQ(slice.data()[slice.size()], 'Y');
+
+  lite3cpp::Buffer parsed = lite3cpp::lite3_json::from_json_string(slice);
+  EXPECT_EQ(parsed.get_i64(0, "a"), 42);
+  size_t nested = parsed.get_obj(0, "nested");
+  EXPECT_EQ(parsed.get_str(nested, "msg"), "hello");
+  size_t arr = parsed.get_arr(0, "arr");
+  EXPECT_EQ(parsed.arr_get_i64(arr, 0), 1);
+  EXPECT_EQ(parsed.arr_get_i64(arr, 2), 3);
+
+  // Also test const char* literal and std::string overloads remain unambiguous
+  lite3cpp::Buffer from_lit = lite3cpp::lite3_json::from_json_string(R"({"lit":true})");
+  EXPECT_TRUE(from_lit.get_bool(0, "lit"));
+  std::string std_s = R"({"str":"ok"})";
+  lite3cpp::Buffer from_str = lite3cpp::lite3_json::from_json_string(std_s);
+  EXPECT_EQ(from_str.get_str(0, "str"), "ok");
+
+  // Empty and invalid string_view slices throw lite3cpp::exception
+  EXPECT_THROW((void)lite3cpp::lite3_json::from_json_string(std::string_view{}),
+               lite3cpp::exception);
+  EXPECT_THROW((void)lite3cpp::lite3_json::from_json_string(std::string_view("", 0)),
+               lite3cpp::exception);
+  std::string_view bad_slice(backing.data(), 10);
+  EXPECT_THROW((void)lite3cpp::lite3_json::from_json_string(bad_slice),
+               lite3cpp::exception);
+}

@@ -95,11 +95,14 @@ std::string to_json_string(const Buffer &buffer, size_t ofs) {
   return result;
 }
 
-Buffer from_json_string(const std::string &json_str) {
+Buffer from_json_string(std::string_view json_str) {
   ScopedMetric sm("json_parse");
   lite3cpp::log_if_enabled(lite3cpp::LogLevel::Info, "JSON parse started.",
                            "JsonParse", std::chrono::microseconds(0), 0);
-  yyjson_doc *doc = yyjson_read(json_str.c_str(), json_str.size(), 0);
+  if (json_str.empty()) {
+    throw lite3cpp::exception("Invalid JSON string provided.");
+  }
+  yyjson_doc *doc = yyjson_read(json_str.data(), json_str.size(), 0);
   if (!doc) {
     throw lite3cpp::exception("Invalid JSON string provided.");
   }
