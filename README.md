@@ -22,6 +22,20 @@ High-performance applications can disable the observability subsystem at compile
 cmake -DLITE3CPP_DISABLE_OBSERVABILITY=OFF ..
 ```
 
+### Measured Performance (`Release -O3`, `LITE3CPP_DISABLE_OBSERVABILITY=ON`)
+7-trial micro-benchmarks comparing the original baseline (`PRE`) against current `HEAD`:
+
+| Benchmark Case | Baseline (`PRE`) | Current (`Release -O3`) | Throughput / Allocs | Speedup |
+| :--- | :---: | :---: | :---: | :---: |
+| **`L1.1_get`** (64-key B-Tree lookup) | 105.01 ns | **38.96 ns** | 25.67 Mops/s | **2.70x** |
+| **`L1.1_set`** (in-place update) | 118.74 ns | **53.43 ns** | 18.72 Mops/s | **2.22x** |
+| **`L1.2_wrap_512B`** (`Buffer::from_view`) | 311.40 ns | **85.39 ns** | 11.71 Mops/s (`0` allocs) | **3.65x** |
+| **`L1.2_wrap_1MiB`** (`Buffer::from_view`) | 60,184.07 ns | **85.47 ns** | 11.72 Mops/s (`0` allocs) | **704x** |
+| **`L1.2_release_4KiB`** (`O(1)` `release()`) | 4,453.44 ns | **9.49 ns** | 105.68 Mops/s | **469x** |
+| **`L1.4_optional_lookup_mix`** (`_hk` `try_get_*`) | 162.33 ns | **46.19 ns** | 24.68 Mops/s | **3.51x** |
+| **`L1.4_bytes_write_64KiB`** (`set_bytes_uninitialized`) | 4,650.56 ns | **1,449.37 ns** | 0.69 Mops/s (`0` allocs) | **3.21x** |
+| **`L1.4_json_array_1000`** (`O(N)` `to_json_string`) | 564.49 µs | **82.98 µs** | 12,068 ops/s | **6.80x** |
+
 ## Observability Interface
 
 The `lite3-cpp` library provides an extensible observability interface through `ILogger` and `IMetrics` to allow users to integrate their custom logging and metrics collection systems.
