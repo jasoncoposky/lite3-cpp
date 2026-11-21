@@ -38,73 +38,19 @@ Iterator::Iterator(const Buffer *buffer, size_t /*ofs*/, size_t node_offset,
   }
 }
 
-bool Iterator::is_modified() const noexcept {
-  if (m_buffer->data() != m_initial_data ||
-      m_buffer->bound_size() != m_initial_bound_size) {
-    return true;
-  }
-  NodeView root_node(
-      reinterpret_cast<const PackedNodeLayout *>(m_buffer->data()));
-  if (m_initial_buffer_generation != root_node.generation()) {
-    return true;
-  }
-  if (m_depth >= 0 && m_stack[0].offset != 0) {
-    if (m_stack[0].offset > m_buffer->bound_size() - sizeof(PackedNodeLayout)) {
-      return true;
-    }
-    NodeView start_node(reinterpret_cast<const PackedNodeLayout *>(
-        m_buffer->data() + m_stack[0].offset));
-    if (m_initial_node_generation != start_node.generation()) {
-      return true;
-    }
-  }
-  return false;
-}
-
 Iterator &Iterator::operator++() {
-  if (m_buffer) {
-    if (m_buffer->bound_size() < sizeof(PackedNodeLayout)) {
-      throw lite3cpp::exception("Invalid iterator");
-    }
-    if (is_modified()) {
+  if (m_buffer) [[likely]] {
+    if (is_modified()) [[unlikely]] {
       throw lite3cpp::exception(
           "Iterator invalidated: Buffer modified during iteration.");
     }
+    find_next();
   }
-  find_next();
   return *this;
 }
 
-const Iterator::value_type &Iterator::operator*() const {
-  if (!m_buffer || m_buffer->bound_size() < sizeof(PackedNodeLayout))
-    throw lite3cpp::exception("Invalid iterator");
-  if (is_modified()) {
-    throw lite3cpp::exception(
-        "Iterator invalidated: Buffer modified during iteration.");
-  }
-  return m_current_value;
-}
-
-const Iterator::value_type *Iterator::operator->() const {
-  if (!m_buffer || m_buffer->bound_size() < sizeof(PackedNodeLayout))
-    throw lite3cpp::exception("Invalid iterator");
-  if (is_modified()) {
-    throw lite3cpp::exception(
-        "Iterator invalidated: Buffer modified during iteration.");
-  }
-  return &m_current_value;
-}
-
-std::string_view Iterator::key() const { return (**this).key; }
-
-bool Iterator::operator==(const Iterator &other) const {
-  if (!m_buffer && !other.m_buffer)
-    return true;
-  if (m_buffer != other.m_buffer)
-    return false;
-
-  if (m_buffer->bound_size() < sizeof(PackedNodeLayout) || is_modified() ||
-      other.is_modified()) {
+bool Iterator::equals_non_end(const Iterator &other) const {
+  if (is_modified() || other.is_modified()) {
     return false;
   }
 
@@ -113,41 +59,32 @@ bool Iterator::operator==(const Iterator &other) const {
          m_stack[m_depth].key_index == other.m_stack[other.m_depth].key_index;
 }
 
-bool Iterator::operator!=(const Iterator &other) const {
-  return !(*this == other);
-}
-
 void Iterator::find_first() {
-  if (!m_buffer)
+  if (!m_buffer) [[unlikely]]
     return;
-  if (m_buffer->bound_size() < sizeof(PackedNodeLayout) || is_modified()) {
+  const uint8_t *const base = m_initial_data;
+  const size_t max_node_ofs = m_initial_bound_size - sizeof(PackedNodeLayout);
+
+  if (m_depth < 0 || m_stack[m_depth].offset > max_node_ofs) [[unlikely]] {
     m_buffer = nullptr;
     return;
   }
 
-  if (m_depth < 0 ||
-      m_stack[m_depth].offset >
-          m_buffer->bound_size() - sizeof(PackedNodeLayout)) {
-    m_buffer = nullptr;
-    return;
-  }
+  const auto *packed =
+      reinterpret_cast<const PackedNodeLayout *>(base + m_stack[m_depth].offset);
 
-  NodeView current_node(reinterpret_cast<const PackedNodeLayout *>(
-      m_buffer->data() + m_stack[m_depth].offset));
-
-  while (current_node.get_child_offset(0) != 0) {
-    if (m_depth >= static_cast<int>(config::tree_height_max)) {
+  while (packed->child_ofs[0] != 0) {
+    if (m_depth >= static_cast<int>(config::tree_height_max)) [[unlikely]] {
       throw lite3cpp::exception("Corrupt B-tree: max height exceeded");
     }
-    size_t child_ofs = current_node.get_child_offset(0);
-    if (child_ofs > m_buffer->bound_size() - sizeof(PackedNodeLayout)) {
+    const size_t child_ofs = packed->child_ofs[0];
+    if (child_ofs > max_node_ofs) [[unlikely]] {
       m_buffer = nullptr;
       return;
     }
     m_depth++;
     m_stack[m_depth] = {child_ofs, 0};
-    current_node = NodeView(reinterpret_cast<const PackedNodeLayout *>(
-        m_buffer->data() + m_stack[m_depth].offset));
+    packed = reinterpret_cast<const PackedNodeLayout *>(base + child_ofs);
   }
 }
 
@@ -156,30 +93,29 @@ void Iterator::find_next() {
                            "Iterator::find_next called.", "IteratorNext",
                            std::chrono::microseconds(0), 0);
 
-  if (!m_buffer)
-    return;
-  if (m_buffer->bound_size() < sizeof(PackedNodeLayout) || is_modified()) {
-    m_buffer = nullptr;
-    return;
-  }
+  const uint8_t *const base = m_initial_data;
+  const size_t bound = m_initial_bound_size;
+  const size_t max_node_ofs = bound - sizeof(PackedNodeLayout);
 
   while (m_depth >= 0) {
-    if (m_stack[m_depth].offset >
-        m_buffer->bound_size() - sizeof(PackedNodeLayout)) {
+    const size_t cur_ofs = m_stack[m_depth].offset;
+    if (cur_ofs > max_node_ofs) [[unlikely]] {
       m_buffer = nullptr;
       return;
     }
 
-    NodeView current_node(reinterpret_cast<const PackedNodeLayout *>(
-        m_buffer->data() + m_stack[m_depth].offset));
+    const auto *packed =
+        reinterpret_cast<const PackedNodeLayout *>(base + cur_ofs);
+    const int kc = static_cast<int>((packed->size_kc & NODE_KEY_COUNT_MASK) >>
+                                    NODE_KEY_COUNT_SHIFT);
+    const int kidx = m_stack[m_depth].key_index;
 
-    if (m_stack[m_depth].key_index >=
-        static_cast<int>(current_node.key_count())) {
+    if (kidx >= kc) {
       m_depth--;
       continue;
     }
 
-    size_t kv_offset = current_node.get_kv_offset(m_stack[m_depth].key_index);
+    const size_t kv_offset = packed->kv_ofs[kidx];
 
     if (m_is_array) {
       m_current_value.key = {};
@@ -187,39 +123,47 @@ void Iterator::find_next() {
     } else {
       uint32_t key_size = 0;
       size_t tag_size = 0;
-      if (!decode_key_tag(m_buffer->data(), m_buffer->bound_size(),
-                          kv_offset, key_size, tag_size)) {
+      if (!decode_key_tag(base, bound, kv_offset, key_size, tag_size)) [[unlikely]] {
         m_buffer = nullptr;
         return;
       }
       m_current_value.key = std::string_view(
-          reinterpret_cast<const char *>(m_buffer->data() + kv_offset +
-                                         tag_size),
+          reinterpret_cast<const char *>(base + kv_offset + tag_size),
           key_size - 1);
       m_current_value.value_offset = kv_offset + tag_size + key_size;
     }
 
-    if (m_current_value.value_offset >= m_buffer->bound_size()) {
+    if (m_current_value.value_offset >= bound) [[unlikely]] {
       m_buffer = nullptr;
       return;
     }
     m_current_value.value_type =
-        static_cast<Type>(m_buffer->data()[m_current_value.value_offset]);
+        static_cast<Type>(base[m_current_value.value_offset]);
 
-    m_stack[m_depth].key_index++;
-    if (current_node.get_child_offset(m_stack[m_depth].key_index) != 0) {
-      if (m_depth >= static_cast<int>(config::tree_height_max)) {
-        throw lite3cpp::exception("Corrupt B-tree: max height exceeded");
+    const int next_idx = kidx + 1;
+    m_stack[m_depth].key_index = next_idx;
+    size_t child_ofs = packed->child_ofs[next_idx];
+    if (child_ofs != 0) {
+      while (true) {
+        if (m_depth >= static_cast<int>(config::tree_height_max)) [[unlikely]] {
+          throw lite3cpp::exception("Corrupt B-tree: max height exceeded");
+        }
+        if (child_ofs > max_node_ofs) [[unlikely]] {
+          m_buffer = nullptr;
+          return;
+        }
+        m_depth++;
+        m_stack[m_depth] = {child_ofs, 0};
+        const auto *child_packed =
+            reinterpret_cast<const PackedNodeLayout *>(base + child_ofs);
+        child_ofs = child_packed->child_ofs[0];
+        if (child_ofs == 0) {
+          break;
+        }
       }
-      size_t child_ofs =
-          current_node.get_child_offset(m_stack[m_depth].key_index);
-      if (child_ofs > m_buffer->bound_size() - sizeof(PackedNodeLayout)) {
-        m_buffer = nullptr;
-        return;
-      }
-      m_depth++;
-      m_stack[m_depth] = {child_ofs, 0};
-      find_first();
+    } else if (next_idx >= kc) {
+      // Pop exhausted leaf/internal nodes eagerly to avoid re-reading on next step
+      m_depth--;
     }
     return;
   }

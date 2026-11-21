@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "config.hpp"
+#include "exception.hpp"
 #include "iterator.hpp"
 #include "node.hpp"
 #include "utils/hash.hpp"
@@ -47,17 +48,17 @@ public:
   void init_object();
   void init_array();
 
-  void set_null(size_t ofs, HashedKey key);
-  void set_bool(size_t ofs, HashedKey key, bool value);
-  void set_i64(size_t ofs, HashedKey key, int64_t value);
-  void set_f64(size_t ofs, HashedKey key, double value);
-  void set_str(size_t ofs, HashedKey key, std::string_view value);
-  void set_bytes(size_t ofs, HashedKey key,
+  void set_null(size_t ofs, const HashedKey& key);
+  void set_bool(size_t ofs, const HashedKey& key, bool value);
+  void set_i64(size_t ofs, const HashedKey& key, int64_t value);
+  void set_f64(size_t ofs, const HashedKey& key, double value);
+  void set_str(size_t ofs, const HashedKey& key, std::string_view value);
+  void set_bytes(size_t ofs, const HashedKey& key,
                  std::span<const std::byte> value);
-  std::span<std::byte> set_bytes_uninitialized(size_t ofs, HashedKey key,
+  std::span<std::byte> set_bytes_uninitialized(size_t ofs, const HashedKey& key,
                                                size_t len);
-  size_t set_obj(size_t ofs, HashedKey key);
-  size_t set_arr(size_t ofs, HashedKey key);
+  size_t set_obj(size_t ofs, const HashedKey& key);
+  size_t set_arr(size_t ofs, const HashedKey& key);
 
   void arr_append_null(size_t ofs);
   void arr_append_bool(size_t ofs, bool value);
@@ -69,23 +70,23 @@ public:
   size_t arr_append_obj(size_t ofs);
   size_t arr_append_arr(size_t ofs);
 
-  bool get_bool(size_t ofs, HashedKey key) const;
-  int64_t get_i64(size_t ofs, HashedKey key) const;
-  double get_f64(size_t ofs, HashedKey key) const;
-  std::string_view get_str(size_t ofs, HashedKey key) const;
-  std::span<const std::byte> get_bytes(size_t ofs, HashedKey key) const;
-  size_t get_obj(size_t ofs, HashedKey key) const;
-  size_t get_arr(size_t ofs, HashedKey key) const;
+  bool get_bool(size_t ofs, const HashedKey& key) const;
+  int64_t get_i64(size_t ofs, const HashedKey& key) const;
+  double get_f64(size_t ofs, const HashedKey& key) const;
+  std::string_view get_str(size_t ofs, const HashedKey& key) const;
+  std::span<const std::byte> get_bytes(size_t ofs, const HashedKey& key) const;
+  size_t get_obj(size_t ofs, const HashedKey& key) const;
+  size_t get_arr(size_t ofs, const HashedKey& key) const;
 
-  std::optional<bool> try_get_bool(size_t ofs, HashedKey key) const noexcept;
-  std::optional<int64_t> try_get_i64(size_t ofs, HashedKey key) const noexcept;
-  std::optional<double> try_get_f64(size_t ofs, HashedKey key) const noexcept;
+  std::optional<bool> try_get_bool(size_t ofs, const HashedKey& key) const noexcept;
+  std::optional<int64_t> try_get_i64(size_t ofs, const HashedKey& key) const noexcept;
+  std::optional<double> try_get_f64(size_t ofs, const HashedKey& key) const noexcept;
   std::optional<std::string_view> try_get_str(size_t ofs,
-                                              HashedKey key) const noexcept;
+                                              const HashedKey& key) const noexcept;
   std::optional<std::span<const std::byte>>
-  try_get_bytes(size_t ofs, HashedKey key) const noexcept;
-  std::optional<size_t> try_get_obj(size_t ofs, HashedKey key) const noexcept;
-  std::optional<size_t> try_get_arr(size_t ofs, HashedKey key) const noexcept;
+  try_get_bytes(size_t ofs, const HashedKey& key) const noexcept;
+  std::optional<size_t> try_get_obj(size_t ofs, const HashedKey& key) const noexcept;
+  std::optional<size_t> try_get_arr(size_t ofs, const HashedKey& key) const noexcept;
 
   bool arr_get_bool(size_t ofs, uint32_t index) const;
   int64_t arr_get_i64(size_t ofs, uint32_t index) const;
@@ -111,8 +112,8 @@ public:
                                         uint32_t index) const noexcept;
 
   Type arr_get_type(size_t ofs, uint32_t index) const;
-  Type get_type(size_t ofs, HashedKey key) const;
-  Type get_type_noexcept(size_t ofs, HashedKey key) const noexcept;
+  Type get_type(size_t ofs, const HashedKey& key) const;
+  Type get_type_noexcept(size_t ofs, const HashedKey& key) const noexcept;
 
   // Access to raw data (read-only)
   const uint8_t *data() const noexcept {
@@ -197,6 +198,53 @@ private:
   const uint8_t *m_ext_data = nullptr;  // External non-owning view pointer
   size_t m_used_size = 0;               // Currently used bytes
 };
+
+inline bool Iterator::is_modified() const noexcept {
+  if (m_buffer->data() != m_initial_data ||
+      m_buffer->bound_size() != m_initial_bound_size) [[unlikely]] {
+    return true;
+  }
+  const auto *root_packed =
+      reinterpret_cast<const PackedNodeLayout *>(m_initial_data);
+  if (m_initial_buffer_generation !=
+      ((root_packed->gen_type & NODE_GEN_MASK) >> NODE_GEN_SHIFT)) [[unlikely]] {
+    return true;
+  }
+  if (m_depth >= 0 && m_stack[0].offset != 0) [[unlikely]] {
+    if (m_stack[0].offset > m_initial_bound_size - sizeof(PackedNodeLayout)) {
+      return true;
+    }
+    const auto *start_packed = reinterpret_cast<const PackedNodeLayout *>(
+        m_initial_data + m_stack[0].offset);
+    if (m_initial_node_generation !=
+        ((start_packed->gen_type & NODE_GEN_MASK) >> NODE_GEN_SHIFT)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+inline const Iterator::value_type &Iterator::operator*() const {
+  if (!m_buffer) [[unlikely]]
+    throw lite3cpp::exception("Invalid iterator");
+  if (is_modified()) [[unlikely]] {
+    throw lite3cpp::exception(
+        "Iterator invalidated: Buffer modified during iteration.");
+  }
+  return m_current_value;
+}
+
+inline const Iterator::value_type *Iterator::operator->() const {
+  if (!m_buffer) [[unlikely]]
+    throw lite3cpp::exception("Invalid iterator");
+  if (is_modified()) [[unlikely]] {
+    throw lite3cpp::exception(
+        "Iterator invalidated: Buffer modified during iteration.");
+  }
+  return &m_current_value;
+}
+
+inline std::string_view Iterator::key() const { return (**this).key; }
 
 } // namespace lite3cpp
 

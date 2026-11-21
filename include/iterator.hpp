@@ -28,10 +28,17 @@ namespace lite3cpp {
         const value_type* operator->() const;
         std::string_view key() const;
 
-        bool operator==(const Iterator& other) const;
-        bool operator!=(const Iterator& other) const;
+        bool operator==(const Iterator& other) const {
+            if (m_buffer != other.m_buffer) return false;
+            if (!m_buffer) return true;
+            return equals_non_end(other);
+        }
+        bool operator!=(const Iterator& other) const {
+            return !(*this == other);
+        }
 
     private:
+        bool equals_non_end(const Iterator& other) const;
         const Buffer* m_buffer;
         const uint8_t* m_initial_data = nullptr;
         size_t m_initial_bound_size = 0;

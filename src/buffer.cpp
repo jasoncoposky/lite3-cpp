@@ -10,14 +10,14 @@
 
 namespace lite3cpp {
 
-// Branchless scalar lower-bound over sorted hashes[0..count-1] (0 <= count <= 7).
-// Compiles to cmp + adc with zero branch misses and zero SIMD transition cost.
-static inline int find_hash_slot_branchless(const PackedNodeLayout *packed,
-                                            int count,
-                                            uint32_t target_hash) noexcept {
+// Early-exit scalar lower-bound over sorted hashes[0..count-1] (0 <= count <= 7).
+// Avoids SSE2 auto-vectorization setup and XMM spills across memcmp calls.
+static inline int find_hash_slot(const PackedNodeLayout *packed,
+                                 int count,
+                                 uint32_t target_hash) noexcept {
   int i = 0;
-  for (int j = 0; j < count; ++j) {
-    i += static_cast<int>(packed->hashes[j] < target_hash);
+  while (i < count && packed->hashes[i] < target_hash) {
+    ++i;
   }
   return i;
 }
@@ -227,29 +227,34 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
     throw exception("Value size overflow");
   }
 
-  auto ptr_in_owned_buffer = [this](const void *p, size_t &out_ofs) noexcept -> bool {
-    if (p == nullptr || m_ext_data != nullptr || m_data.empty()) {
+  // Only check self-aliasing when a reallocation or CoW materialization occurs.
+  auto ensure_capacity_and_rebase = [&](size_t required_bytes) {
+    if (m_ext_data == nullptr &&
+        required_bytes <= m_data.size() - m_used_size) [[likely]] {
+      return;
+    }
+    auto ptr_in_owned_buffer = [this](const void *p, size_t &out_ofs) noexcept -> bool {
+      if (p == nullptr || m_ext_data != nullptr || m_data.empty()) {
+        return false;
+      }
+      const auto base_addr = reinterpret_cast<std::uintptr_t>(m_data.data());
+      const auto end_addr = base_addr + m_data.size();
+      const auto p_addr = reinterpret_cast<std::uintptr_t>(p);
+      if (p_addr >= base_addr && p_addr < end_addr) {
+        out_ofs = static_cast<size_t>(p_addr - base_addr);
+        return true;
+      }
       return false;
-    }
-    const auto base_addr = reinterpret_cast<std::uintptr_t>(m_data.data());
-    const auto end_addr = base_addr + m_data.size();
-    const auto p_addr = reinterpret_cast<std::uintptr_t>(p);
-    if (p_addr >= base_addr && p_addr < end_addr) {
-      out_ofs = static_cast<size_t>(p_addr - base_addr);
-      return true;
-    }
-    return false;
-  };
+    };
+    size_t key_alias_ofs = 0;
+    const bool key_aliases_owned =
+        !is_append && !key.empty() && ptr_in_owned_buffer(key.data(), key_alias_ofs);
+    size_t val_alias_ofs = 0;
+    const bool val_aliases_owned =
+        (val_len > 0 && val_ptr != nullptr) && ptr_in_owned_buffer(val_ptr, val_alias_ofs);
 
-  size_t key_alias_ofs = 0;
-  const bool key_aliases_owned =
-      !is_append && !key.empty() && ptr_in_owned_buffer(key.data(), key_alias_ofs);
+    ensure_capacity(required_bytes);
 
-  size_t val_alias_ofs = 0;
-  const bool val_aliases_owned =
-      (val_len > 0 && val_ptr != nullptr) && ptr_in_owned_buffer(val_ptr, val_alias_ofs);
-
-  auto rebase_aliases = [&]() noexcept {
     if (key_aliases_owned) {
       key = std::string_view(
           reinterpret_cast<const char *>(m_data.data() + key_alias_ofs),
@@ -260,8 +265,8 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
     }
   };
 
-  if (m_ext_data != nullptr) {
-    ensure_capacity(0);
+  if (m_ext_data != nullptr) [[unlikely]] {
+    ensure_capacity_and_rebase(0);
   }
 
   size_t key_tag_size = is_append ? 0 : key_tag_byte_count(key.size() + 1);
@@ -303,9 +308,8 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
                             ~(config::node_alignment - 1);
       size_t space_needed = (parent_ofs == SIZE_MAX) ? (2 * config::node_size)
                                                      : config::node_size;
-      ensure_capacity(space_needed + (next_aligned - m_used_size) +
-                      128); // +slack
-      rebase_aliases();
+      ensure_capacity_and_rebase(space_needed + (next_aligned - m_used_size) +
+                                 128); // +slack
 
       if (next_aligned > m_used_size) {
         std::memset(m_data.data() + m_used_size, 0, next_aligned - m_used_size);
@@ -394,12 +398,6 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       parent.set_size_kc(parent.size(), parent.key_count() + 1);
 
       node.set_key_count(static_cast<uint32_t>(mid));
-      if (is_leaf) {
-        for (size_t k = 0; k <= config::node_key_count; ++k) {
-          node.set_child_offset(static_cast<int>(k), 0);
-          sibling.set_child_offset(static_cast<int>(k), 0);
-        }
-      }
 
       bool corrupt_med = false;
       int cmp_med = compare_node_key(m_data.data(), bound_size(), parent,
@@ -421,9 +419,9 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       continue; // Restart loop
     }
 
-    // Branchless lower-bound hash search; only decode key tag on hash match
+    // Early-exit lower-bound hash search; only decode key tag on hash match
     const int count = static_cast<int>(node.key_count());
-    int i = find_hash_slot_branchless(node_ptr, count, key_hash);
+    int i = find_hash_slot(node_ptr, count, key_hash);
     int cmp = 1;
     size_t matched_val_ofs = 0;
     if (i < count && node_ptr->hashes[i] == key_hash) {
@@ -431,24 +429,61 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
         cmp = 0;
         matched_val_ofs = node.get_kv_offset(i);
       } else {
-        bool corrupt_tag = false;
-        while (i < count && node_ptr->hashes[i] == key_hash) {
-          int kcmp = compare_key_only(m_data.data(), bound_size(), node, i, key,
-                                      matched_val_ofs, &corrupt_tag);
-          if (corrupt_tag) {
-            throw exception("Corrupted key tag in buffer");
-          }
-          if (kcmp < 0) {
-            ++i;
-          } else {
-            cmp = kcmp;
-            break;
+        const uint8_t *base_ptr = m_data.data();
+        const size_t bsz = bound_size();
+        const size_t vo0 = node_ptr->kv_ofs[i];
+        uint32_t klen0 = 0;
+        size_t tb0 = 0;
+        if (!decode_key_tag(base_ptr, bsz, vo0, klen0, tb0)) [[unlikely]] {
+          throw exception("Corrupted key tag in buffer");
+        }
+        if (static_cast<size_t>(klen0 - 1) == key.size() &&
+            (key.empty() ||
+             std::memcmp(base_ptr + vo0 + tb0, key.data(), key.size()) == 0)) [[likely]] {
+          cmp = 0;
+          matched_val_ofs = vo0 + tb0 + klen0;
+        } else {
+          bool corrupt_tag = false;
+          while (i < count && node_ptr->hashes[i] == key_hash) {
+            int kcmp = compare_key_only(base_ptr, bsz, node, i, key,
+                                        matched_val_ofs, &corrupt_tag);
+            if (corrupt_tag) {
+              throw exception("Corrupted key tag in buffer");
+            }
+            if (kcmp < 0) {
+              ++i;
+            } else {
+              cmp = kcmp;
+              break;
+            }
           }
         }
       }
     }
 
     if (cmp == 0) {
+      size_t vo = matched_val_ofs;
+      if (vo >= bound_size()) [[unlikely]] {
+        throw exception("Corrupted value offset in buffer");
+      }
+
+      // Fast path for same-type fixed-size in-place overwrites (Int64/Float64/Bool/Null)
+      Type existing_type = static_cast<Type>(m_data[vo]);
+      if (existing_type == type) [[likely]] {
+        if ((type == Type::Int64 || type == Type::Float64) &&
+            bound_size() - vo >= 9) [[likely]] {
+          std::memcpy(m_data.data() + vo + 1, val_ptr, 8);
+          return vo;
+        }
+        if (type == Type::Bool && bound_size() - vo >= 2) {
+          m_data[vo + 1] = *static_cast<const uint8_t *>(val_ptr);
+          return vo;
+        }
+        if (type == Type::Null) {
+          return vo;
+        }
+      }
+
       // Calculate new size requirements early for both paths
       size_t klen = is_append ? 0 : (key.size() + key_tag_size + 1);
 
@@ -459,15 +494,6 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
         val_total_len++;
 
       // === OPTIMIZATION: Check for In-Place Update ===
-      // matched_val_ofs already points past key tag + key bytes.
-      size_t vo = matched_val_ofs;
-
-      if (vo >= bound_size()) {
-        throw exception("Corrupted value offset in buffer");
-      }
-
-      // Check existing value size
-      Type existing_type = static_cast<Type>(m_data[vo]);
       size_t existing_vlen = 0;
       size_t existing_total_len = 1; // Type
 
@@ -514,8 +540,13 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
             payload_dst[val_len] = 0;
         } else {
           uint8_t *payload_dst = m_data.data() + vstart;
-          if (val_len && val_ptr != nullptr && payload_dst != val_ptr)
+          if (val_len == 8) {
+            std::memcpy(payload_dst, val_ptr, 8);
+          } else if (val_len == 1) {
+            *payload_dst = *static_cast<const uint8_t *>(val_ptr);
+          } else if (val_len && val_ptr != nullptr && payload_dst != val_ptr) {
             std::memmove(payload_dst, val_ptr, val_len);
+          }
         }
         return vo;
       }
@@ -525,8 +556,7 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       if (klen > SIZE_MAX - val_total_len) {
         throw exception("Buffer size overflow");
       }
-      ensure_capacity(klen + val_total_len);
-      rebase_aliases();
+      ensure_capacity_and_rebase(klen + val_total_len);
       // Re-acquire pointers after resize
       node_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + node_ofs);
       MutableNodeView(node_ptr).set_kv_offset(i, static_cast<uint32_t>(m_used_size));
@@ -552,7 +582,11 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
         if (type == Type::String)
           m_data[vstart + val_len] = 0;
       } else {
-        if (val_len && val_ptr != nullptr)
+        if (val_len == 8 && val_ptr != nullptr)
+          std::memcpy(m_data.data() + vstart, val_ptr, 8);
+        else if (val_len == 1 && val_ptr != nullptr)
+          m_data[vstart] = *static_cast<const uint8_t *>(val_ptr);
+        else if (val_len && val_ptr != nullptr)
           std::memcpy(m_data.data() + vstart, val_ptr, val_len);
       }
       return m_used_size - val_total_len;
@@ -574,8 +608,7 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       if (klen > SIZE_MAX - vlen) {
         throw exception("Buffer size overflow");
       }
-      ensure_capacity(klen + vlen);
-      rebase_aliases();
+      ensure_capacity_and_rebase(klen + vlen);
       node_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + node_ofs);
       MutableNodeView node_upd(node_ptr);
 
@@ -600,7 +633,11 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
         if (type == Type::String)
           m_data[vstart + val_len] = 0;
       } else {
-        if (val_len && val_ptr != nullptr)
+        if (val_len == 8 && val_ptr != nullptr)
+          std::memcpy(m_data.data() + vstart, val_ptr, 8);
+        else if (val_len == 1 && val_ptr != nullptr)
+          m_data[vstart] = *static_cast<const uint8_t *>(val_ptr);
+        else if (val_len && val_ptr != nullptr)
           std::memcpy(m_data.data() + vstart, val_ptr, val_len);
       }
 
@@ -625,16 +662,20 @@ get_impl_noexcept_t(const uint8_t *base, size_t data_sz, size_t ofs,
                     bool *max_height_exceeded) noexcept {
   ScopedMetric sm("get");
   constexpr Type expected_type = IsArrayOp ? Type::Array : Type::Object;
+  if (base == nullptr || data_sz < sizeof(PackedNodeLayout)) [[unlikely]] {
+    type = Type::Invalid;
+    return nullptr;
+  }
+  const size_t max_node_ofs = data_sz - sizeof(PackedNodeLayout);
   size_t node_ofs = ofs;
   size_t depth = 0;
 
   while (true) {
-    if (base == nullptr || data_sz < sizeof(PackedNodeLayout) ||
-        node_ofs > data_sz - sizeof(PackedNodeLayout)) {
+    if (node_ofs > max_node_ofs) [[unlikely]] {
       type = Type::Invalid;
       return nullptr;
     }
-    if (depth > config::tree_height_max) {
+    if (depth > config::tree_height_max) [[unlikely]] {
       if (max_height_exceeded != nullptr) {
         *max_height_exceeded = true;
       }
@@ -645,54 +686,68 @@ get_impl_noexcept_t(const uint8_t *base, size_t data_sz, size_t ofs,
     const auto *packed =
         reinterpret_cast<const PackedNodeLayout *>(base + node_ofs);
     NodeView node(packed);
-    if (node.type() != expected_type) {
+    if (node.type() != expected_type) [[unlikely]] {
       type = Type::Invalid;
       return nullptr;
     }
 
     const int count = static_cast<int>(node.key_count());
-    int i = find_hash_slot_branchless(packed, count, hash);
-    int cmp = 1;
-    size_t matched_val_ofs = 0;
+    int i = find_hash_slot(packed, count, hash);
     if (i < count && packed->hashes[i] == hash) {
+      size_t matched_val_ofs = 0;
+      bool found = false;
       if constexpr (IsArrayOp) {
-        cmp = 0;
-        matched_val_ofs = node.get_kv_offset(i);
+        matched_val_ofs = packed->kv_ofs[i];
+        found = true;
       } else {
-        bool corrupt_tag = false;
-        while (i < count && packed->hashes[i] == hash) {
-          int kcmp = compare_key_only(base, data_sz, node, i, key,
-                                      matched_val_ofs, &corrupt_tag);
-          if (corrupt_tag) {
-            type = Type::Invalid;
-            return nullptr;
-          }
-          if (kcmp < 0) {
-            ++i;
-          } else {
-            cmp = kcmp;
-            break;
+        const size_t vo0 = packed->kv_ofs[i];
+        uint32_t klen0 = 0;
+        size_t tb0 = 0;
+        if (!decode_key_tag(base, data_sz, vo0, klen0, tb0)) [[unlikely]] {
+          type = Type::Invalid;
+          return nullptr;
+        }
+        if (static_cast<size_t>(klen0 - 1) == key.size() &&
+            (key.empty() ||
+             std::memcmp(base + vo0 + tb0, key.data(), key.size()) == 0)) [[likely]] {
+          matched_val_ofs = vo0 + tb0 + klen0;
+          found = true;
+        } else {
+          bool corrupt_tag = false;
+          while (i < count && packed->hashes[i] == hash) {
+            int kcmp = compare_key_only(base, data_sz, node, i, key,
+                                        matched_val_ofs, &corrupt_tag);
+            if (corrupt_tag) [[unlikely]] {
+              type = Type::Invalid;
+              return nullptr;
+            }
+            if (kcmp < 0) {
+              ++i;
+            } else {
+              found = (kcmp == 0);
+              break;
+            }
           }
         }
       }
+
+      if (found) [[likely]] {
+        if (matched_val_ofs >= data_sz) [[unlikely]] {
+          type = Type::Invalid;
+          return nullptr;
+        }
+        const uint8_t raw_type = base[matched_val_ofs];
+        if (raw_type >= static_cast<uint8_t>(Type::Invalid)) [[unlikely]] {
+          type = Type::Invalid;
+          return nullptr;
+        }
+        type = static_cast<Type>(raw_type);
+        return reinterpret_cast<const std::byte *>(base + matched_val_ofs + 1);
+      }
     }
 
-    if (cmp == 0) {
-      if (matched_val_ofs >= data_sz) {
-        type = Type::Invalid;
-        return nullptr;
-      }
-      const uint8_t raw_type = base[matched_val_ofs];
-      if (raw_type >= static_cast<uint8_t>(Type::Invalid)) {
-        type = Type::Invalid;
-        return nullptr;
-      }
-      type = static_cast<Type>(raw_type);
-      return reinterpret_cast<const std::byte *>(base + matched_val_ofs + 1);
-    }
-
-    if (node.get_child_offset(0) != 0 && node.get_child_offset(i) != 0) {
-      node_ofs = node.get_child_offset(i);
+    if (packed->child_ofs[0] != 0 && packed->child_ofs[i] != 0) {
+      node_ofs = packed->child_ofs[i];
       ++depth;
       continue;
     }
@@ -726,26 +781,26 @@ const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
   return p;
 }
 
-void Buffer::set_null(size_t ofs, HashedKey key) {
+void Buffer::set_null(size_t ofs, const HashedKey& key) {
   set_impl(ofs, key.key, key.hash, 0, nullptr, Type::Null);
 }
-void Buffer::set_i64(size_t ofs, HashedKey key, int64_t value) {
+void Buffer::set_i64(size_t ofs, const HashedKey& key, int64_t value) {
   set_impl(ofs, key.key, key.hash, sizeof(value), &value, Type::Int64);
 }
-void Buffer::set_f64(size_t ofs, HashedKey key, double value) {
+void Buffer::set_f64(size_t ofs, const HashedKey& key, double value) {
   set_impl(ofs, key.key, key.hash, sizeof(value), &value, Type::Float64);
 }
-void Buffer::set_str(size_t ofs, HashedKey key, std::string_view value) {
+void Buffer::set_str(size_t ofs, const HashedKey& key, std::string_view value) {
   set_impl(ofs, key.key, key.hash, value.size(), value.data(), Type::String);
 }
-void Buffer::set_bool(size_t ofs, HashedKey key, bool value) {
+void Buffer::set_bool(size_t ofs, const HashedKey& key, bool value) {
   set_impl(ofs, key.key, key.hash, sizeof(value), &value, Type::Bool);
 }
-void Buffer::set_bytes(size_t ofs, HashedKey key,
+void Buffer::set_bytes(size_t ofs, const HashedKey& key,
                        std::span<const std::byte> value) {
   set_impl(ofs, key.key, key.hash, value.size(), value.data(), Type::Bytes);
 }
-std::span<std::byte> Buffer::set_bytes_uninitialized(size_t ofs, HashedKey key,
+std::span<std::byte> Buffer::set_bytes_uninitialized(size_t ofs, const HashedKey& key,
                                                      size_t len) {
   size_t vo = set_impl(ofs, key.key, key.hash, len, nullptr, Type::Bytes);
   return {reinterpret_cast<std::byte *>(m_data.data() + vo + 1 +
@@ -754,7 +809,7 @@ std::span<std::byte> Buffer::set_bytes_uninitialized(size_t ofs, HashedKey key,
 }
 
 // Throwing Getters
-int64_t Buffer::get_i64(size_t ofs, HashedKey key) const {
+int64_t Buffer::get_i64(size_t ofs, const HashedKey& key) const {
   Type t = Type::Invalid;
   auto *p = get_impl(ofs, key.key, key.hash, t);
   if (!p)
@@ -769,7 +824,7 @@ int64_t Buffer::get_i64(size_t ofs, HashedKey key) const {
   std::memcpy(&v, p, 8);
   return v;
 }
-double Buffer::get_f64(size_t ofs, HashedKey key) const {
+double Buffer::get_f64(size_t ofs, const HashedKey& key) const {
   Type t = Type::Invalid;
   auto *p = get_impl(ofs, key.key, key.hash, t);
   if (!p || t != Type::Float64)
@@ -782,7 +837,7 @@ double Buffer::get_f64(size_t ofs, HashedKey key) const {
   std::memcpy(&v, p, 8);
   return v;
 }
-bool Buffer::get_bool(size_t ofs, HashedKey key) const {
+bool Buffer::get_bool(size_t ofs, const HashedKey& key) const {
   Type t = Type::Invalid;
   auto *p = get_impl(ofs, key.key, key.hash, t);
   if (!p || t != Type::Bool)
@@ -795,7 +850,7 @@ bool Buffer::get_bool(size_t ofs, HashedKey key) const {
   std::memcpy(&raw, p, 1);
   return raw != 0;
 }
-std::string_view Buffer::get_str(size_t ofs, HashedKey key) const {
+std::string_view Buffer::get_str(size_t ofs, const HashedKey& key) const {
   Type t = Type::Invalid;
   auto *p = get_impl(ofs, key.key, key.hash, t);
   if (!p || t != Type::String)
@@ -811,7 +866,7 @@ std::string_view Buffer::get_str(size_t ofs, HashedKey key) const {
   return std::string_view(reinterpret_cast<const char *>(p + 4), sz);
 }
 
-size_t Buffer::set_obj(size_t ofs, HashedKey key) {
+size_t Buffer::set_obj(size_t ofs, const HashedKey& key) {
   size_t o = set_impl(ofs, key.key, key.hash, 0, nullptr, Type::Object);
   size_t pos = o + 1;
   ensure_capacity(config::node_size); // Ensure space for initialization
@@ -821,7 +876,7 @@ size_t Buffer::set_obj(size_t ofs, HashedKey key) {
   m_used_size += config::node_size;
   return pos; // Return Offset of the Node
 }
-size_t Buffer::set_arr(size_t ofs, HashedKey key) {
+size_t Buffer::set_arr(size_t ofs, const HashedKey& key) {
   size_t o = set_impl(ofs, key.key, key.hash, 0, nullptr, Type::Array);
   size_t pos = o + 1;
   ensure_capacity(config::node_size);
@@ -832,28 +887,204 @@ size_t Buffer::set_arr(size_t ofs, HashedKey key) {
   return pos;
 }
 
-// Array appends
+// Dedicated rightmost-descent array append (index == current_size is strictly
+// greater than every existing index in the B-tree: no hash search, no key
+// comparisons, no parent/leaf shifts).
 size_t Buffer::arr_append_impl(size_t ofs, size_t val_len, const void *val_ptr,
                                Type type) {
-  if (m_used_size < config::node_size || ofs > m_used_size - config::node_size) {
+  ScopedMetric sm("set");
+  if (m_used_size < config::node_size || ofs > m_used_size - config::node_size) [[unlikely]] {
     throw exception("Invalid offset");
   }
-  NodeView arr_view(reinterpret_cast<const PackedNodeLayout *>(data() + ofs));
-  if (arr_view.type() != Type::Array) {
-    throw exception("Not an array");
+  if ((type == Type::String || type == Type::Bytes) && val_len > UINT32_MAX) [[unlikely]] {
+    throw exception("Value size overflow");
   }
-  size_t current_size = arr_view.size();
 
-  size_t vo = set_impl(ofs, {}, static_cast<uint32_t>(current_size), val_len,
-                       val_ptr, type, true);
+  auto ensure_capacity_and_rebase = [&](size_t required_bytes) {
+    if (m_ext_data == nullptr &&
+        required_bytes <= m_data.size() - m_used_size) [[likely]] {
+      return;
+    }
+    size_t val_alias_ofs = 0;
+    bool val_aliases_owned = false;
+    if (val_len > 0 && val_ptr != nullptr && m_ext_data == nullptr && !m_data.empty()) {
+      const auto base_addr = reinterpret_cast<std::uintptr_t>(m_data.data());
+      const auto p_addr = reinterpret_cast<std::uintptr_t>(val_ptr);
+      if (p_addr >= base_addr && p_addr < base_addr + m_data.size()) {
+        val_alias_ofs = static_cast<size_t>(p_addr - base_addr);
+        val_aliases_owned = true;
+      }
+    }
+    ensure_capacity(required_bytes);
+    if (val_aliases_owned) {
+      val_ptr = m_data.data() + val_alias_ofs;
+    }
+  };
 
-  // Re-acquire pointer as set_impl might have resized m_data
-  MutableNodeView arr(
-      reinterpret_cast<PackedNodeLayout *>(m_data.data() + ofs));
+  {
+    const auto *check_root =
+        reinterpret_cast<const PackedNodeLayout *>(data() + ofs);
+    if (NodeView(check_root).type() != Type::Array) [[unlikely]] {
+      throw exception("Not an array");
+    }
+  }
 
-  // Update size (key_count was updated by set_impl)
-  arr.set_size(static_cast<uint32_t>(current_size + 1));
-  return vo;
+  if (m_ext_data != nullptr) [[unlikely]] {
+    ensure_capacity_and_rebase(0);
+  }
+
+  auto *root_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + ofs);
+  MutableNodeView root_view(root_ptr);
+  const uint32_t new_index = root_view.size();
+
+  size_t parent_ofs = SIZE_MAX;
+  size_t node_ofs = ofs;
+  int depth = 0;
+
+  while (true) {
+    if (node_ofs > m_used_size - config::node_size) [[unlikely]] {
+      throw exception("Corrupt B-tree node offset");
+    }
+    if (depth > static_cast<int>(config::tree_height_max) + 2) [[unlikely]] {
+      throw exception("Corrupt B-tree: max height exceeded");
+    }
+
+    auto *node_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + node_ofs);
+    MutableNodeView node(node_ptr);
+    node.set_gen_type(node.generation() + 1, node.type());
+
+    const uint32_t kc = node.key_count();
+    if (kc >= config::node_key_count_max) [[unlikely]] {
+      if (m_used_size > SIZE_MAX - config::node_alignment) {
+        throw exception("Buffer size overflow");
+      }
+      const size_t next_aligned = (m_used_size + config::node_alignment - 1) &
+                                  ~(config::node_alignment - 1);
+      const size_t space_needed = (parent_ofs == SIZE_MAX)
+                                      ? (2 * config::node_size)
+                                      : config::node_size;
+      ensure_capacity_and_rebase(space_needed + (next_aligned - m_used_size) + 128);
+
+      if (next_aligned > m_used_size) {
+        std::memset(m_data.data() + m_used_size, 0, next_aligned - m_used_size);
+      }
+      m_used_size = next_aligned;
+
+      node_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + node_ofs);
+      node = MutableNodeView(node_ptr);
+
+      if (parent_ofs == SIZE_MAX) {
+        const size_t moves_to_ofs = m_used_size;
+        m_used_size += config::node_size;
+        std::memcpy(m_data.data() + moves_to_ofs, node_ptr, config::node_size);
+
+        const auto root_type = node.type();
+        const uint32_t old_size = node.size();
+        std::memset(node_ptr, 0, config::node_size);
+        node.set_gen_type(1, root_type);
+        node.set_size_kc(old_size, 0);
+        node_ptr->child_ofs[0] = static_cast<uint32_t>(moves_to_ofs);
+
+        parent_ofs = node_ofs;
+        node_ofs = moves_to_ofs;
+        ++depth;
+        continue;
+      }
+
+      auto *parent_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + parent_ofs);
+      MutableNodeView parent(parent_ptr);
+      const int parent_kc = static_cast<int>(parent.key_count());
+      if (parent_kc >= static_cast<int>(config::node_key_count_max) ||
+          parent_ptr->child_ofs[parent_kc] != node_ofs) [[unlikely]] {
+        throw exception("Corrupt B-tree parent link");
+      }
+
+      const size_t sibling_ofs = m_used_size;
+      m_used_size += config::node_size;
+      auto *sib_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + sibling_ofs);
+      std::memset(sib_ptr, 0, config::node_size);
+      MutableNodeView sibling(sib_ptr);
+      sibling.set_gen_type(node.generation(), node.type());
+
+      constexpr int mid = static_cast<int>(config::node_key_count_min);
+      const int move_count = static_cast<int>(kc) - (mid + 1);
+      const bool is_leaf = (node_ptr->child_ofs[0] == 0);
+      if (!is_leaf) {
+        sib_ptr->child_ofs[0] = node_ptr->child_ofs[mid + 1];
+      }
+      for (int j = 0; j < move_count; ++j) {
+        sib_ptr->hashes[j] = node_ptr->hashes[mid + 1 + j];
+        sib_ptr->kv_ofs[j] = node_ptr->kv_ofs[mid + 1 + j];
+        if (!is_leaf) {
+          sib_ptr->child_ofs[j + 1] = node_ptr->child_ofs[mid + 2 + j];
+        }
+      }
+      sibling.set_size_kc(0, static_cast<uint32_t>(move_count));
+
+      // Append median directly to end of parent (i_in_parent == parent_kc)
+      parent_ptr->hashes[parent_kc] = node_ptr->hashes[mid];
+      parent_ptr->kv_ofs[parent_kc] = node_ptr->kv_ofs[mid];
+      parent_ptr->child_ofs[parent_kc + 1] = static_cast<uint32_t>(sibling_ofs);
+      parent.set_size_kc(parent.size(), static_cast<uint32_t>(parent_kc + 1));
+
+      node.set_key_count(static_cast<uint32_t>(mid));
+
+      // New append index is strictly > median, so always continue in sibling
+      node_ofs = sibling_ofs;
+      continue;
+    }
+
+    if (node_ptr->child_ofs[0] != 0) {
+      const uint32_t next_child = node_ptr->child_ofs[kc];
+      if (next_child != 0) [[likely]] {
+        parent_ofs = node_ofs;
+        node_ofs = next_child;
+        ++depth;
+        continue;
+      }
+    }
+
+    // Leaf append at slot kc
+    size_t vlen = 1 + val_len;
+    if (type == Type::String || type == Type::Bytes)
+      vlen += 4;
+    if (type == Type::String)
+      vlen++;
+
+    ensure_capacity_and_rebase(vlen);
+    node_ptr = reinterpret_cast<PackedNodeLayout *>(m_data.data() + node_ofs);
+    MutableNodeView node_upd(node_ptr);
+
+    const size_t start = m_used_size;
+    m_used_size += vlen;
+
+    uint8_t *dst = m_data.data() + start;
+    *dst++ = static_cast<uint8_t>(type);
+    if (type == Type::String || type == Type::Bytes) {
+      uint32_t sz = static_cast<uint32_t>(val_len);
+      std::memcpy(dst, &sz, 4);
+      dst += 4;
+      if (val_len && val_ptr != nullptr)
+        std::memcpy(dst, val_ptr, val_len);
+      if (type == Type::String)
+        dst[val_len] = 0;
+    } else if (val_len == 8 && val_ptr != nullptr) {
+      std::memcpy(dst, val_ptr, 8);
+    } else if (val_len == 1 && val_ptr != nullptr) {
+      *dst = *static_cast<const uint8_t *>(val_ptr);
+    } else if (val_len && val_ptr != nullptr) {
+      std::memcpy(dst, val_ptr, val_len);
+    }
+
+    node_ptr->hashes[kc] = new_index;
+    node_ptr->kv_ofs[kc] = static_cast<uint32_t>(start);
+    node_upd.set_key_count(kc + 1);
+
+    MutableNodeView arr(
+        reinterpret_cast<PackedNodeLayout *>(m_data.data() + ofs));
+    arr.set_size(new_index + 1);
+    return start;
+  }
 }
 
 void Buffer::arr_append_null(size_t ofs) {
@@ -1041,18 +1272,18 @@ Type Buffer::arr_get_type(size_t ofs, uint32_t index) const {
   arr_get_impl(ofs, index, t);
   return t;
 }
-Type Buffer::get_type(size_t ofs, HashedKey key) const {
+Type Buffer::get_type(size_t ofs, const HashedKey& key) const {
   Type t = Type::Invalid;
   get_impl(ofs, key.key, key.hash, t);
   return t;
 }
-Type Buffer::get_type_noexcept(size_t ofs, HashedKey key) const noexcept {
+Type Buffer::get_type_noexcept(size_t ofs, const HashedKey& key) const noexcept {
   Type t = Type::Invalid;
   get_impl_noexcept(ofs, key.key, key.hash, t);
   return t;
 }
 
-size_t Buffer::get_obj(size_t ofs, HashedKey key) const {
+size_t Buffer::get_obj(size_t ofs, const HashedKey& key) const {
   Type t = Type::Invalid;
   auto *p = get_impl(ofs, key.key, key.hash, t);
   if (!p || t != Type::Object)
@@ -1063,7 +1294,7 @@ size_t Buffer::get_obj(size_t ofs, HashedKey key) const {
     throw exception("Corrupt nested node");
   return node_ofs;
 }
-size_t Buffer::get_arr(size_t ofs, HashedKey key) const {
+size_t Buffer::get_arr(size_t ofs, const HashedKey& key) const {
   Type t = Type::Invalid;
   auto *p = get_impl(ofs, key.key, key.hash, t);
   if (!p || t != Type::Array)
@@ -1075,7 +1306,7 @@ size_t Buffer::get_arr(size_t ofs, HashedKey key) const {
   return node_ofs;
 }
 
-std::span<const std::byte> Buffer::get_bytes(size_t ofs, HashedKey key) const {
+std::span<const std::byte> Buffer::get_bytes(size_t ofs, const HashedKey& key) const {
   Type type = Type::Invalid;
   const std::byte *ptr = get_impl(ofs, key.key, key.hash, type, false);
 
@@ -1187,43 +1418,43 @@ std::optional<size_t> decode_node_ofs_noexcept(const uint8_t *base,
 } // namespace
 
 std::optional<bool> Buffer::try_get_bool(size_t ofs,
-                                         HashedKey key) const noexcept {
+                                         const HashedKey& key) const noexcept {
   Type t = Type::Invalid;
   const std::byte *p = get_impl_noexcept(ofs, key.key, key.hash, t);
   return decode_bool_noexcept(data(), bound_size(), p, t);
 }
 std::optional<int64_t> Buffer::try_get_i64(size_t ofs,
-                                           HashedKey key) const noexcept {
+                                           const HashedKey& key) const noexcept {
   Type t = Type::Invalid;
   const std::byte *p = get_impl_noexcept(ofs, key.key, key.hash, t);
   return decode_i64_noexcept(data(), bound_size(), p, t);
 }
 std::optional<double> Buffer::try_get_f64(size_t ofs,
-                                          HashedKey key) const noexcept {
+                                          const HashedKey& key) const noexcept {
   Type t = Type::Invalid;
   const std::byte *p = get_impl_noexcept(ofs, key.key, key.hash, t);
   return decode_f64_noexcept(data(), bound_size(), p, t);
 }
 std::optional<std::string_view>
-Buffer::try_get_str(size_t ofs, HashedKey key) const noexcept {
+Buffer::try_get_str(size_t ofs, const HashedKey& key) const noexcept {
   Type t = Type::Invalid;
   const std::byte *p = get_impl_noexcept(ofs, key.key, key.hash, t);
   return decode_str_noexcept(data(), bound_size(), p, t);
 }
 std::optional<std::span<const std::byte>>
-Buffer::try_get_bytes(size_t ofs, HashedKey key) const noexcept {
+Buffer::try_get_bytes(size_t ofs, const HashedKey& key) const noexcept {
   Type t = Type::Invalid;
   const std::byte *p = get_impl_noexcept(ofs, key.key, key.hash, t);
   return decode_bytes_noexcept(data(), bound_size(), p, t);
 }
 std::optional<size_t> Buffer::try_get_obj(size_t ofs,
-                                          HashedKey key) const noexcept {
+                                          const HashedKey& key) const noexcept {
   Type t = Type::Invalid;
   const std::byte *p = get_impl_noexcept(ofs, key.key, key.hash, t);
   return decode_node_ofs_noexcept(data(), bound_size(), p, t, Type::Object);
 }
 std::optional<size_t> Buffer::try_get_arr(size_t ofs,
-                                          HashedKey key) const noexcept {
+                                          const HashedKey& key) const noexcept {
   Type t = Type::Invalid;
   const std::byte *p = get_impl_noexcept(ofs, key.key, key.hash, t);
   return decode_node_ofs_noexcept(data(), bound_size(), p, t, Type::Array);

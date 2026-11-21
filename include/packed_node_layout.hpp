@@ -35,6 +35,10 @@ namespace lite3cpp {
 
     inline size_t encode_key_tag(uint8_t* dst, size_t key_len) noexcept {
         const uint32_t klen = static_cast<uint32_t>(key_len + 1);
+        if (klen < (1u << 6)) [[likely]] {
+            dst[0] = static_cast<uint8_t>(klen << 2);
+            return 1;
+        }
         const size_t tb = key_tag_byte_count(klen);
         const uint32_t raw = (klen << 2) | static_cast<uint32_t>(tb - 1);
         for (size_t b = 0; b < tb; ++b) {
@@ -45,15 +49,21 @@ namespace lite3cpp {
 
     inline bool decode_key_tag(const uint8_t* base, size_t bound, size_t vo,
                                uint32_t& klen_with_null, size_t& tag_bytes) noexcept {
-        if (vo >= bound) return false;
-        const size_t tb = static_cast<size_t>(base[vo] & 0x03u) + 1u;
-        if (vo + tb > bound) return false;
-        uint32_t raw = 0;
-        for (size_t b = 0; b < tb; ++b) {
-            raw |= static_cast<uint32_t>(base[vo + b]) << (b * 8);
+        if (vo >= bound) [[unlikely]] return false;
+        const uint8_t first = base[vo];
+        const size_t tb = static_cast<size_t>(first & 0x03u) + 1u;
+        uint32_t klen;
+        if (tb == 1) [[likely]] {
+            klen = static_cast<uint32_t>(first >> 2);
+        } else {
+            if (vo + tb > bound) [[unlikely]] return false;
+            uint32_t raw = first;
+            for (size_t b = 1; b < tb; ++b) {
+                raw |= static_cast<uint32_t>(base[vo + b]) << (b * 8);
+            }
+            klen = raw >> 2;
         }
-        const uint32_t klen = raw >> 2;
-        if (klen == 0 || vo + tb + klen > bound) return false;
+        if (klen == 0 || vo + tb + klen > bound) [[unlikely]] return false;
         klen_with_null = klen;
         tag_bytes = tb;
         return true;
