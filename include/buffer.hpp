@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 
+#include "buffer_view.hpp"
 #include "config.hpp"
 #include "exception.hpp"
 #include "iterator.hpp"
@@ -44,6 +45,7 @@ public:
                      bytes.size());
   }
   bool is_view() const noexcept { return m_ext_data != nullptr; }
+  BufferView view() const noexcept { return BufferView(data(), size()); }
 
   void init_object();
   void init_array();

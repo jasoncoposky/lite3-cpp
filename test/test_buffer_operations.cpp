@@ -1218,4 +1218,67 @@ TEST(BufferBranchlessSearchTest, BoundaryHashesCollisionsAndJsonRoundTrip) {
   EXPECT_EQ(rt.get_str(rt_obj, "k49"), "v49");
 }
 
+TEST_F(BufferTest, BufferViewTrivialReadOnlyAndSafety) {
+  static_assert(std::is_trivially_copyable_v<lite3cpp::BufferView>);
+  static_assert(std::is_trivially_destructible_v<lite3cpp::BufferView>);
+  static_assert(sizeof(lite3cpp::BufferView) == 2 * sizeof(void *));
+
+  using namespace lite3cpp::literals;
+
+  buffer.init_object();
+  buffer.set_bool(0, "b"_hk, true);
+  buffer.set_i64(0, "i"_hk, -42);
+  buffer.set_f64(0, "f"_hk, 3.25);
+  buffer.set_str(0, "s"_hk, "hello");
+  const std::byte raw_bytes[] = {std::byte{0xDE}, std::byte{0xAD}, std::byte{0xBE}};
+  buffer.set_bytes(0, "bin"_hk, raw_bytes);
+  size_t sub_obj = buffer.set_obj(0, "obj"_hk);
+  buffer.set_i64(sub_obj, "x"_hk, 99);
+  size_t sub_arr = buffer.set_arr(0, "arr"_hk);
+  buffer.arr_append_i64(sub_arr, 10);
+  buffer.arr_append_str(sub_arr, "ten");
+
+  lite3cpp::BufferView view = buffer.view();
+  EXPECT_FALSE(view.empty());
+  EXPECT_EQ(view.data(), buffer.data());
+  EXPECT_EQ(view.size(), buffer.size());
+
+  EXPECT_EQ(view.try_get_bool(0, "b"_hk), true);
+  EXPECT_EQ(view.try_get_i64(0, "i"_hk), -42);
+  EXPECT_DOUBLE_EQ(*view.try_get_f64(0, "f"_hk), 3.25);
+  EXPECT_EQ(view.try_get_str(0, "s"_hk), "hello");
+  auto bin = view.try_get_bytes(0, "bin"_hk);
+  ASSERT_TRUE(bin.has_value());
+  ASSERT_EQ(bin->size(), 3u);
+  EXPECT_EQ((*bin)[0], std::byte{0xDE});
+  EXPECT_EQ((*bin)[2], std::byte{0xBE});
+
+  auto vo = view.try_get_obj(0, "obj"_hk);
+  ASSERT_TRUE(vo.has_value());
+  EXPECT_EQ(view.get_i64(*vo, "x"_hk), 99);
+
+  auto va = view.try_get_arr(0, "arr"_hk);
+  ASSERT_TRUE(va.has_value());
+  EXPECT_EQ(view.arr_try_get_i64(*va, 0), 10);
+  EXPECT_EQ(view.arr_try_get_str(*va, 1), "ten");
+  EXPECT_FALSE(view.arr_try_get_i64(*va, 2).has_value());
+
+  EXPECT_FALSE(view.try_get_i64(0, "missing"_hk).has_value());
+  EXPECT_EQ(view.get_type_noexcept(0, "missing"_hk), lite3cpp::Type::Invalid);
+  EXPECT_EQ(view.get_type(0, "i"_hk), lite3cpp::Type::Int64);
+
+  // Span constructor & empty/truncated safety
+  lite3cpp::BufferView span_view(std::span<const std::byte>(
+      reinterpret_cast<const std::byte *>(buffer.data()), buffer.size()));
+  EXPECT_EQ(span_view.try_get_i64(0, "i"_hk), -42);
+
+  lite3cpp::BufferView empty_view;
+  EXPECT_TRUE(empty_view.empty());
+  EXPECT_FALSE(empty_view.try_get_i64(0, "i"_hk).has_value());
+
+  lite3cpp::BufferView trunc_view(buffer.data(), 16);
+  EXPECT_FALSE(trunc_view.try_get_i64(0, "i"_hk).has_value());
+}
+
+
 

@@ -7,6 +7,17 @@
 
 namespace lite3cpp {
 
+namespace {
+#if defined(__GNUC__) || defined(__clang__)
+[[noreturn]] __attribute__((noinline, cold))
+#else
+[[noreturn]]
+#endif
+void throw_iter_error(const char *msg) {
+  throw lite3cpp::exception(msg);
+}
+} // namespace
+
 Iterator::Iterator(const Buffer *buffer, size_t /*ofs*/, size_t node_offset,
                    uint32_t initial_buffer_generation)
     : m_buffer(buffer),
@@ -41,7 +52,7 @@ Iterator::Iterator(const Buffer *buffer, size_t /*ofs*/, size_t node_offset,
 Iterator &Iterator::operator++() {
   if (m_buffer) [[likely]] {
     if (is_modified()) [[unlikely]] {
-      throw lite3cpp::exception(
+      throw_iter_error(
           "Iterator invalidated: Buffer modified during iteration.");
     }
     find_next();
@@ -143,10 +154,10 @@ void Iterator::find_next() {
     const int next_idx = kidx + 1;
     m_stack[m_depth].key_index = next_idx;
     size_t child_ofs = packed->child_ofs[next_idx];
-    if (child_ofs != 0) {
+    if (child_ofs != 0) [[unlikely]] {
       while (true) {
         if (m_depth >= static_cast<int>(config::tree_height_max)) [[unlikely]] {
-          throw lite3cpp::exception("Corrupt B-tree: max height exceeded");
+          throw_iter_error("Corrupt B-tree: max height exceeded");
         }
         if (child_ofs > max_node_ofs) [[unlikely]] {
           m_buffer = nullptr;

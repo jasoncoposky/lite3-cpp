@@ -1511,4 +1511,368 @@ Iterator Buffer::begin(size_t ofs) const {
 }
 Iterator Buffer::end(size_t) const { return Iterator(nullptr, 0, 0, 0); }
 
+// ============================================================================
+// BufferView (trivially copyable/destructible read-only view)
+// ============================================================================
+
+namespace {
+
+inline const std::byte *view_get_throwing(const uint8_t *base, size_t bound,
+                                          size_t ofs, std::string_view key,
+                                          uint32_t hash, Type &type) {
+  bool max_height_exceeded = false;
+  const std::byte *p = get_impl_noexcept_t<false>(
+      base, bound, ofs, key, hash, type, &max_height_exceeded);
+  if (max_height_exceeded) [[unlikely]] {
+    throw exception("Corrupt B-tree: max height exceeded");
+  }
+  return p;
+}
+
+inline const std::byte *view_arr_get_throwing(const uint8_t *base, size_t bound,
+                                              size_t ofs, uint32_t index,
+                                              Type &type) {
+  bool max_height_exceeded = false;
+  const std::byte *p = get_impl_noexcept_t<true>(
+      base, bound, ofs, {}, index, type, &max_height_exceeded);
+  if (max_height_exceeded) [[unlikely]] {
+    throw exception("Corrupt B-tree: max height exceeded");
+  }
+  return p;
+}
+
+} // namespace
+
+std::optional<bool>
+BufferView::try_get_bool(size_t ofs, const HashedKey &key) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p = get_impl_noexcept_t<false>(
+      m_data, m_size, ofs, key.key, key.hash, t, nullptr);
+  return decode_bool_noexcept(m_data, m_size, p, t);
+}
+
+std::optional<int64_t>
+BufferView::try_get_i64(size_t ofs, const HashedKey &key) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p = get_impl_noexcept_t<false>(
+      m_data, m_size, ofs, key.key, key.hash, t, nullptr);
+  return decode_i64_noexcept(m_data, m_size, p, t);
+}
+
+std::optional<double>
+BufferView::try_get_f64(size_t ofs, const HashedKey &key) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p = get_impl_noexcept_t<false>(
+      m_data, m_size, ofs, key.key, key.hash, t, nullptr);
+  return decode_f64_noexcept(m_data, m_size, p, t);
+}
+
+std::optional<std::string_view>
+BufferView::try_get_str(size_t ofs, const HashedKey &key) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p = get_impl_noexcept_t<false>(
+      m_data, m_size, ofs, key.key, key.hash, t, nullptr);
+  return decode_str_noexcept(m_data, m_size, p, t);
+}
+
+std::optional<std::span<const std::byte>>
+BufferView::try_get_bytes(size_t ofs, const HashedKey &key) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p = get_impl_noexcept_t<false>(
+      m_data, m_size, ofs, key.key, key.hash, t, nullptr);
+  return decode_bytes_noexcept(m_data, m_size, p, t);
+}
+
+std::optional<size_t>
+BufferView::try_get_obj(size_t ofs, const HashedKey &key) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p = get_impl_noexcept_t<false>(
+      m_data, m_size, ofs, key.key, key.hash, t, nullptr);
+  return decode_node_ofs_noexcept(m_data, m_size, p, t, Type::Object);
+}
+
+std::optional<size_t>
+BufferView::try_get_arr(size_t ofs, const HashedKey &key) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p = get_impl_noexcept_t<false>(
+      m_data, m_size, ofs, key.key, key.hash, t, nullptr);
+  return decode_node_ofs_noexcept(m_data, m_size, p, t, Type::Array);
+}
+
+std::optional<bool>
+BufferView::arr_try_get_bool(size_t ofs, uint32_t index) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p =
+      get_impl_noexcept_t<true>(m_data, m_size, ofs, {}, index, t, nullptr);
+  return decode_bool_noexcept(m_data, m_size, p, t);
+}
+
+std::optional<int64_t>
+BufferView::arr_try_get_i64(size_t ofs, uint32_t index) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p =
+      get_impl_noexcept_t<true>(m_data, m_size, ofs, {}, index, t, nullptr);
+  return decode_i64_noexcept(m_data, m_size, p, t);
+}
+
+std::optional<double>
+BufferView::arr_try_get_f64(size_t ofs, uint32_t index) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p =
+      get_impl_noexcept_t<true>(m_data, m_size, ofs, {}, index, t, nullptr);
+  return decode_f64_noexcept(m_data, m_size, p, t);
+}
+
+std::optional<std::string_view>
+BufferView::arr_try_get_str(size_t ofs, uint32_t index) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p =
+      get_impl_noexcept_t<true>(m_data, m_size, ofs, {}, index, t, nullptr);
+  return decode_str_noexcept(m_data, m_size, p, t);
+}
+
+std::optional<std::span<const std::byte>>
+BufferView::arr_try_get_bytes(size_t ofs, uint32_t index) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p =
+      get_impl_noexcept_t<true>(m_data, m_size, ofs, {}, index, t, nullptr);
+  return decode_bytes_noexcept(m_data, m_size, p, t);
+}
+
+std::optional<size_t>
+BufferView::arr_try_get_obj(size_t ofs, uint32_t index) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p =
+      get_impl_noexcept_t<true>(m_data, m_size, ofs, {}, index, t, nullptr);
+  return decode_node_ofs_noexcept(m_data, m_size, p, t, Type::Object);
+}
+
+std::optional<size_t>
+BufferView::arr_try_get_arr(size_t ofs, uint32_t index) const noexcept {
+  Type t = Type::Invalid;
+  const std::byte *p =
+      get_impl_noexcept_t<true>(m_data, m_size, ofs, {}, index, t, nullptr);
+  return decode_node_ofs_noexcept(m_data, m_size, p, t, Type::Array);
+}
+
+Type BufferView::get_type(size_t ofs, const HashedKey &key) const {
+  Type t = Type::Invalid;
+  view_get_throwing(m_data, m_size, ofs, key.key, key.hash, t);
+  return t;
+}
+
+Type BufferView::get_type_noexcept(size_t ofs,
+                                   const HashedKey &key) const noexcept {
+  Type t = Type::Invalid;
+  get_impl_noexcept_t<false>(m_data, m_size, ofs, key.key, key.hash, t, nullptr);
+  return t;
+}
+
+Type BufferView::arr_get_type(size_t ofs, uint32_t index) const {
+  Type t = Type::Invalid;
+  view_arr_get_throwing(m_data, m_size, ofs, index, t);
+  return t;
+}
+
+bool BufferView::get_bool(size_t ofs, const HashedKey &key) const {
+  Type t = Type::Invalid;
+  auto *p = view_get_throwing(m_data, m_size, ofs, key.key, key.hash, t);
+  if (!p || t != Type::Bool)
+    throw exception("Type mismatch or not found");
+  const size_t rem =
+      m_size - static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (rem < 1)
+    throw exception("Corrupt value");
+  uint8_t raw = 0;
+  std::memcpy(&raw, p, 1);
+  return raw != 0;
+}
+
+int64_t BufferView::get_i64(size_t ofs, const HashedKey &key) const {
+  Type t = Type::Invalid;
+  auto *p = view_get_throwing(m_data, m_size, ofs, key.key, key.hash, t);
+  if (!p)
+    return 0;
+  if (t != Type::Int64)
+    throw exception("Type mismatch");
+  const size_t rem =
+      m_size - static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (rem < 8)
+    throw exception("Corrupt value");
+  int64_t v;
+  std::memcpy(&v, p, 8);
+  return v;
+}
+
+double BufferView::get_f64(size_t ofs, const HashedKey &key) const {
+  Type t = Type::Invalid;
+  auto *p = view_get_throwing(m_data, m_size, ofs, key.key, key.hash, t);
+  if (!p || t != Type::Float64)
+    throw exception("Type mismatch or not found");
+  const size_t rem =
+      m_size - static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (rem < 8)
+    throw exception("Corrupt value");
+  double v;
+  std::memcpy(&v, p, 8);
+  return v;
+}
+
+std::string_view BufferView::get_str(size_t ofs, const HashedKey &key) const {
+  Type t = Type::Invalid;
+  auto *p = view_get_throwing(m_data, m_size, ofs, key.key, key.hash, t);
+  if (!p || t != Type::String)
+    return "";
+  const size_t rem =
+      m_size - static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (rem < 4)
+    throw exception("Corrupt string length");
+  uint32_t sz;
+  std::memcpy(&sz, p, 4);
+  if (sz > rem - 4)
+    throw exception("Corrupt string length");
+  return std::string_view(reinterpret_cast<const char *>(p + 4), sz);
+}
+
+std::span<const std::byte>
+BufferView::get_bytes(size_t ofs, const HashedKey &key) const {
+  Type t = Type::Invalid;
+  auto *p = view_get_throwing(m_data, m_size, ofs, key.key, key.hash, t);
+  if (p && t == Type::Bytes) {
+    const size_t rem =
+        m_size - static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+    if (rem < sizeof(uint32_t))
+      throw exception("Corrupt bytes length");
+    uint32_t sz;
+    std::memcpy(&sz, p, sizeof(uint32_t));
+    if (sz > rem - sizeof(uint32_t))
+      throw exception("Corrupt bytes length");
+    return {reinterpret_cast<const std::byte *>(p + sizeof(uint32_t)), sz};
+  }
+  return {};
+}
+
+size_t BufferView::get_obj(size_t ofs, const HashedKey &key) const {
+  Type t = Type::Invalid;
+  auto *p = view_get_throwing(m_data, m_size, ofs, key.key, key.hash, t);
+  if (!p || t != Type::Object)
+    throw exception("Type mismatch");
+  const size_t node_ofs =
+      static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (m_size - node_ofs < config::node_size)
+    throw exception("Corrupt nested node");
+  return node_ofs;
+}
+
+size_t BufferView::get_arr(size_t ofs, const HashedKey &key) const {
+  Type t = Type::Invalid;
+  auto *p = view_get_throwing(m_data, m_size, ofs, key.key, key.hash, t);
+  if (!p || t != Type::Array)
+    throw exception("Type mismatch");
+  const size_t node_ofs =
+      static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (m_size - node_ofs < config::node_size)
+    throw exception("Corrupt nested node");
+  return node_ofs;
+}
+
+bool BufferView::arr_get_bool(size_t ofs, uint32_t index) const {
+  Type t = Type::Invalid;
+  auto *p = view_arr_get_throwing(m_data, m_size, ofs, index, t);
+  if (!p || t != Type::Bool)
+    throw exception("Type mismatch or index out of bounds");
+  const size_t rem =
+      m_size - static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (rem < 1)
+    throw exception("Corrupt value");
+  uint8_t raw = 0;
+  std::memcpy(&raw, p, 1);
+  return raw != 0;
+}
+
+int64_t BufferView::arr_get_i64(size_t ofs, uint32_t index) const {
+  Type t = Type::Invalid;
+  auto *p = view_arr_get_throwing(m_data, m_size, ofs, index, t);
+  if (!p || t != Type::Int64)
+    throw exception("Type mismatch or index out of bounds");
+  const size_t rem =
+      m_size - static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (rem < 8)
+    throw exception("Corrupt value");
+  int64_t v;
+  std::memcpy(&v, p, 8);
+  return v;
+}
+
+double BufferView::arr_get_f64(size_t ofs, uint32_t index) const {
+  Type t = Type::Invalid;
+  auto *p = view_arr_get_throwing(m_data, m_size, ofs, index, t);
+  if (!p || t != Type::Float64)
+    throw exception("Type mismatch or index out of bounds");
+  const size_t rem =
+      m_size - static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (rem < 8)
+    throw exception("Corrupt value");
+  double v;
+  std::memcpy(&v, p, 8);
+  return v;
+}
+
+std::string_view BufferView::arr_get_str(size_t ofs, uint32_t index) const {
+  Type t = Type::Invalid;
+  auto *p = view_arr_get_throwing(m_data, m_size, ofs, index, t);
+  if (!p || t != Type::String)
+    throw exception("Type mismatch or index out of bounds");
+  const size_t rem =
+      m_size - static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (rem < 4)
+    throw exception("Corrupt string length");
+  uint32_t sz;
+  std::memcpy(&sz, p, 4);
+  if (sz > rem - 4)
+    throw exception("Corrupt string length");
+  return std::string_view(reinterpret_cast<const char *>(p + 4), sz);
+}
+
+std::span<const std::byte>
+BufferView::arr_get_bytes(size_t ofs, uint32_t index) const {
+  Type t = Type::Invalid;
+  auto *p = view_arr_get_throwing(m_data, m_size, ofs, index, t);
+  if (!p || t != Type::Bytes)
+    throw exception("Type mismatch");
+  const size_t rem =
+      m_size - static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (rem < sizeof(uint32_t))
+    throw exception("Corrupt bytes length");
+  uint32_t sz;
+  std::memcpy(&sz, p, sizeof(uint32_t));
+  if (sz > rem - sizeof(uint32_t))
+    throw exception("Corrupt bytes length");
+  return {reinterpret_cast<const std::byte *>(p + sizeof(uint32_t)), sz};
+}
+
+size_t BufferView::arr_get_obj(size_t ofs, uint32_t index) const {
+  Type t = Type::Invalid;
+  auto *p = view_arr_get_throwing(m_data, m_size, ofs, index, t);
+  if (!p || t != Type::Object)
+    throw exception("Type mismatch");
+  const size_t node_ofs =
+      static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (m_size - node_ofs < config::node_size)
+    throw exception("Corrupt nested node");
+  return node_ofs;
+}
+
+size_t BufferView::arr_get_arr(size_t ofs, uint32_t index) const {
+  Type t = Type::Invalid;
+  auto *p = view_arr_get_throwing(m_data, m_size, ofs, index, t);
+  if (!p || t != Type::Array)
+    throw exception("Type mismatch");
+  const size_t node_ofs =
+      static_cast<size_t>(reinterpret_cast<const uint8_t *>(p) - m_data);
+  if (m_size - node_ofs < config::node_size)
+    throw exception("Corrupt nested node");
+  return node_ofs;
+}
+
 } // namespace lite3cpp
