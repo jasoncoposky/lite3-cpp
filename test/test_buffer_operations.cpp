@@ -1154,4 +1154,68 @@ TEST_F(BufferTest, ArrayIteratorTraversesEmptySingleLeafSplitAnd1000ElementsInOr
   EXPECT_THROW({ ++reused_it; }, lite3cpp::exception);
 }
 
+TEST(BufferBranchlessSearchTest, BoundaryHashesCollisionsAndJsonRoundTrip) {
+  const uint32_t boundary_hashes[] = {
+      0x00000000u, 0x00000001u, 0x7FFFFFFEu, 0x7FFFFFFFu,
+      0x80000000u, 0x80000001u, 0xFFFFFFFEu, 0xFFFFFFFFu,
+  };
+
+  lite3cpp::Buffer buf;
+  buf.init_object();
+
+  for (size_t i = 0; i < std::size(boundary_hashes); ++i) {
+    std::string k = "bkey_" + std::to_string(i);
+    buf.set_i64(0, lite3cpp::HashedKey(k, boundary_hashes[i]),
+                static_cast<int64_t>(i * 100 + 7));
+  }
+
+  // 12-way forced hash collision (triggers splits across identical hashes)
+  constexpr uint32_t kCollisionHash = 0x80000000u;
+  for (int i = 11; i >= 0; --i) {
+    std::string k =
+        "collide_" + std::string(i < 10 ? "0" : "") + std::to_string(i);
+    buf.set_str(0, lite3cpp::HashedKey(k, kCollisionHash),
+                "val_" + std::to_string(i));
+  }
+  // In-place update on colliding key
+  buf.set_str(0, lite3cpp::HashedKey("collide_05", kCollisionHash), "val_X");
+
+  for (size_t i = 0; i < std::size(boundary_hashes); ++i) {
+    std::string k = "bkey_" + std::to_string(i);
+    auto v = buf.try_get_i64(0, lite3cpp::HashedKey(k, boundary_hashes[i]));
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(*v, static_cast<int64_t>(i * 100 + 7));
+  }
+  for (int i = 0; i < 12; ++i) {
+    std::string k =
+        "collide_" + std::string(i < 10 ? "0" : "") + std::to_string(i);
+    auto v = buf.try_get_str(0, lite3cpp::HashedKey(k, kCollisionHash));
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(*v, (i == 5) ? "val_X" : ("val_" + std::to_string(i)));
+  }
+  EXPECT_FALSE(
+      buf.try_get_str(0, lite3cpp::HashedKey("collide_05a", kCollisionHash))
+          .has_value());
+
+  // JSON serialize + deserialize round-trip on multi-level nested object/array
+  lite3cpp::Buffer nested;
+  nested.init_object();
+  size_t sub_arr = nested.set_arr(0, "arr");
+  for (int i = 0; i < 50; ++i) {
+    nested.arr_append_i64(sub_arr, i);
+  }
+  size_t sub_obj = nested.set_obj(0, "obj");
+  for (int i = 0; i < 50; ++i) {
+    nested.set_str(sub_obj, "k" + std::to_string(i), "v" + std::to_string(i));
+  }
+  std::string js = lite3cpp::lite3_json::to_json_string(nested, 0);
+  lite3cpp::Buffer rt = lite3cpp::lite3_json::from_json_string(js);
+  size_t rt_arr = rt.get_arr(0, "arr");
+  EXPECT_EQ(rt.arr_get_i64(rt_arr, 0), 0);
+  EXPECT_EQ(rt.arr_get_i64(rt_arr, 49), 49);
+  size_t rt_obj = rt.get_obj(0, "obj");
+  EXPECT_EQ(rt.get_str(rt_obj, "k0"), "v0");
+  EXPECT_EQ(rt.get_str(rt_obj, "k49"), "v49");
+}
+
 

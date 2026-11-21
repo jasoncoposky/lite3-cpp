@@ -10,6 +10,42 @@
 
 namespace lite3cpp {
 
+// Branchless scalar lower-bound over sorted hashes[0..count-1] (0 <= count <= 7).
+// Compiles to cmp + adc with zero branch misses and zero SIMD transition cost.
+static inline int find_hash_slot_branchless(const PackedNodeLayout *packed,
+                                            int count,
+                                            uint32_t target_hash) noexcept {
+  int i = 0;
+  for (int j = 0; j < count; ++j) {
+    i += static_cast<int>(packed->hashes[j] < target_hash);
+  }
+  return i;
+}
+
+// Helper for B-tree key-string comparison when hash already matches.
+// Also outputs out_val_ofs (= kv_ofs + tag_bytes + klen) to avoid decoding the
+// key tag a second time on exact match.
+static inline int compare_key_only(const uint8_t *base, size_t data_size,
+                                   const NodeView &node, int idx,
+                                   std::string_view key, size_t &out_val_ofs,
+                                   bool *corrupt_tag = nullptr) noexcept {
+  const size_t vo = node.get_kv_offset(idx);
+  uint32_t klen = 0;
+  size_t tag_bytes = 0;
+  if (!decode_key_tag(base, data_size, vo, klen, tag_bytes)) {
+    if (corrupt_tag != nullptr) {
+      *corrupt_tag = true;
+    }
+    return -1;
+  }
+  out_val_ofs = vo + tag_bytes + klen;
+  const size_t ksz = klen - 1;
+
+  std::string_view existing(
+      reinterpret_cast<const char *>(base + vo + tag_bytes), ksz);
+  return existing.compare(key);
+}
+
 // Helper for B-tree comparison (Hash -> Key)
 static int compare_node_key(const uint8_t *base, size_t data_size,
                             const NodeView &node, int idx, uint32_t hash,
@@ -25,20 +61,9 @@ static int compare_node_key(const uint8_t *base, size_t data_size,
   if (is_arr)
     return 0; // Arrays use unique index as hash
 
-  size_t vo = node.get_kv_offset(idx);
-  uint32_t klen = 0;
-  size_t tag_bytes = 0;
-  if (!decode_key_tag(base, data_size, vo, klen, tag_bytes)) {
-    if (corrupt_tag != nullptr) {
-      *corrupt_tag = true;
-    }
-    return -1;
-  }
-  size_t ksz = klen - 1;
-
-  std::string_view existing(
-      reinterpret_cast<const char *>(base + vo + tag_bytes), ksz);
-  return existing.compare(key);
+  size_t unused_val_ofs = 0;
+  return compare_key_only(base, data_size, node, idx, key, unused_val_ofs,
+                          corrupt_tag);
 }
 
 struct ScopedMetric {
@@ -396,21 +421,30 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
       continue; // Restart loop
     }
 
-    // Search (at most 1 compare_node_key call per inspected slot)
-    int i = 0;
-    int count = static_cast<int>(node.key_count());
+    // Branchless lower-bound hash search; only decode key tag on hash match
+    const int count = static_cast<int>(node.key_count());
+    int i = find_hash_slot_branchless(node_ptr, count, key_hash);
     int cmp = 1;
-    bool corrupt_tag = false;
-    while (i < count) {
-      cmp = compare_node_key(m_data.data(), bound_size(), node, i, key_hash,
-                             key, is_append, &corrupt_tag);
-      if (corrupt_tag) {
-        throw exception("Corrupted key tag in buffer");
-      }
-      if (cmp < 0) {
-        i++;
+    size_t matched_val_ofs = 0;
+    if (i < count && node_ptr->hashes[i] == key_hash) {
+      if (is_append) {
+        cmp = 0;
+        matched_val_ofs = node.get_kv_offset(i);
       } else {
-        break;
+        bool corrupt_tag = false;
+        while (i < count && node_ptr->hashes[i] == key_hash) {
+          int kcmp = compare_key_only(m_data.data(), bound_size(), node, i, key,
+                                      matched_val_ofs, &corrupt_tag);
+          if (corrupt_tag) {
+            throw exception("Corrupted key tag in buffer");
+          }
+          if (kcmp < 0) {
+            ++i;
+          } else {
+            cmp = kcmp;
+            break;
+          }
+        }
       }
     }
 
@@ -425,19 +459,8 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
         val_total_len++;
 
       // === OPTIMIZATION: Check for In-Place Update ===
-      size_t kv_ofs = node.get_kv_offset(i);
-
-      // Calculate existing value offset
-      size_t vo = kv_ofs;
-      if (!is_append) {
-        uint32_t existing_klen = 0;
-        size_t existing_tag_bytes = 0;
-        if (!decode_key_tag(m_data.data(), bound_size(), vo, existing_klen,
-                            existing_tag_bytes)) {
-          throw exception("Corrupted key tag in buffer");
-        }
-        vo += existing_tag_bytes + existing_klen;
-      }
+      // matched_val_ofs already points past key tag + key bytes.
+      size_t vo = matched_val_ofs;
 
       if (vo >= bound_size()) {
         throw exception("Corrupted value offset in buffer");
@@ -595,13 +618,13 @@ size_t Buffer::set_impl(size_t ofs, std::string_view key, uint32_t key_hash,
   }
 }
 
-const std::byte *
-Buffer::get_impl_noexcept(size_t ofs, std::string_view key, uint32_t hash,
-                          Type &type, bool is_array_op,
-                          bool *max_height_exceeded) const noexcept {
+template <bool IsArrayOp>
+static inline const std::byte *
+get_impl_noexcept_t(const uint8_t *base, size_t data_sz, size_t ofs,
+                    std::string_view key, uint32_t hash, Type &type,
+                    bool *max_height_exceeded) noexcept {
   ScopedMetric sm("get");
-  const uint8_t *base = data();
-  const size_t data_sz = bound_size();
+  constexpr Type expected_type = IsArrayOp ? Type::Array : Type::Object;
   size_t node_ofs = ofs;
   size_t depth = 0;
 
@@ -619,54 +642,53 @@ Buffer::get_impl_noexcept(size_t ofs, std::string_view key, uint32_t hash,
       return nullptr;
     }
 
-    NodeView node(
-        reinterpret_cast<const PackedNodeLayout *>(base + node_ofs));
-    if (node.type() != (is_array_op ? Type::Array : Type::Object)) {
+    const auto *packed =
+        reinterpret_cast<const PackedNodeLayout *>(base + node_ofs);
+    NodeView node(packed);
+    if (node.type() != expected_type) {
       type = Type::Invalid;
       return nullptr;
     }
 
-    int i = 0;
-    int count = static_cast<int>(node.key_count());
+    const int count = static_cast<int>(node.key_count());
+    int i = find_hash_slot_branchless(packed, count, hash);
     int cmp = 1;
-    bool corrupt_tag = false;
-    while (i < count) {
-      cmp = compare_node_key(base, data_sz, node, i, hash, key, is_array_op,
-                             &corrupt_tag);
-      if (corrupt_tag) {
-        type = Type::Invalid;
-        return nullptr;
-      }
-      if (cmp < 0) {
-        i++;
+    size_t matched_val_ofs = 0;
+    if (i < count && packed->hashes[i] == hash) {
+      if constexpr (IsArrayOp) {
+        cmp = 0;
+        matched_val_ofs = node.get_kv_offset(i);
       } else {
-        break;
+        bool corrupt_tag = false;
+        while (i < count && packed->hashes[i] == hash) {
+          int kcmp = compare_key_only(base, data_sz, node, i, key,
+                                      matched_val_ofs, &corrupt_tag);
+          if (corrupt_tag) {
+            type = Type::Invalid;
+            return nullptr;
+          }
+          if (kcmp < 0) {
+            ++i;
+          } else {
+            cmp = kcmp;
+            break;
+          }
+        }
       }
     }
 
     if (cmp == 0) {
-      size_t vo = node.get_kv_offset(i);
-      if (!is_array_op) {
-        uint32_t klen = 0;
-        size_t tag_bytes = 0;
-        if (!decode_key_tag(base, data_sz, vo, klen, tag_bytes)) {
-          type = Type::Invalid;
-          return nullptr;
-        }
-        vo += tag_bytes + klen;
-      }
-
-      if (vo >= data_sz) {
+      if (matched_val_ofs >= data_sz) {
         type = Type::Invalid;
         return nullptr;
       }
-      const uint8_t raw_type = base[vo];
+      const uint8_t raw_type = base[matched_val_ofs];
       if (raw_type >= static_cast<uint8_t>(Type::Invalid)) {
         type = Type::Invalid;
         return nullptr;
       }
       type = static_cast<Type>(raw_type);
-      return reinterpret_cast<const std::byte *>(base + vo + 1);
+      return reinterpret_cast<const std::byte *>(base + matched_val_ofs + 1);
     }
 
     if (node.get_child_offset(0) != 0 && node.get_child_offset(i) != 0) {
@@ -678,6 +700,18 @@ Buffer::get_impl_noexcept(size_t ofs, std::string_view key, uint32_t hash,
     type = Type::Invalid;
     return nullptr;
   }
+}
+
+const std::byte *
+Buffer::get_impl_noexcept(size_t ofs, std::string_view key, uint32_t hash,
+                          Type &type, bool is_array_op,
+                          bool *max_height_exceeded) const noexcept {
+  if (is_array_op) {
+    return get_impl_noexcept_t<true>(data(), bound_size(), ofs, key, hash, type,
+                                     max_height_exceeded);
+  }
+  return get_impl_noexcept_t<false>(data(), bound_size(), ofs, key, hash, type,
+                                    max_height_exceeded);
 }
 
 const std::byte *Buffer::get_impl(size_t ofs, std::string_view key,
