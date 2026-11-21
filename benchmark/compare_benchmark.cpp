@@ -3,6 +3,11 @@
 
 #include "lite3.h"
 #include "flatbuffers/flexbuffers.h"
+#include "simdjson.h"
+#include "velocypack/Builder.h"
+#include "velocypack/Iterator.h"
+#include "velocypack/Parser.h"
+#include "velocypack/Slice.h"
 #include "yyjson.h"
 
 #include <algorithm>
@@ -64,16 +69,26 @@ void print_table(const std::string& title,
   std::cout << "\n=== " << title << " ===\n";
   std::cout << std::left << std::setw(28) << "Library" << std::right
             << std::setw(14) << "Median (ns)" << std::setw(14) << "Mops/s"
-            << std::setw(14) << "vs lite3-cpp" << "\n";
-  std::cout << std::string(70, '-') << "\n";
+            << std::setw(20) << "vs Baseline (Row 1)" << "\n";
+  std::cout << std::string(76, '-') << "\n";
 
   double baseline_ns = results.empty() ? 1.0 : results[0].median_ns;
-  for (const auto& r : results) {
-    double ratio = (baseline_ns > 0.0) ? (r.median_ns / baseline_ns) : 1.0;
+  for (size_t idx = 0; idx < results.size(); ++idx) {
+    const auto& r = results[idx];
+    char rel_buf[32];
+    if (idx == 0) {
+      std::snprintf(rel_buf, sizeof(rel_buf), "baseline");
+    } else if (r.median_ns <= baseline_ns) {
+      double factor = (r.median_ns > 0.0) ? (baseline_ns / r.median_ns) : 1.0;
+      std::snprintf(rel_buf, sizeof(rel_buf), "%.2fx faster", factor);
+    } else {
+      double factor = (baseline_ns > 0.0) ? (r.median_ns / baseline_ns) : 1.0;
+      std::snprintf(rel_buf, sizeof(rel_buf), "%.2fx slower", factor);
+    }
     std::cout << std::left << std::setw(28) << r.name << std::right
               << std::fixed << std::setprecision(2) << std::setw(14)
-              << r.median_ns << std::setw(14) << r.mops << std::setw(13)
-              << ratio << "x\n";
+              << r.median_ns << std::setw(14) << r.mops << std::setw(20)
+              << rel_buf << "\n";
   }
 }
 
@@ -175,6 +190,22 @@ std::string build_yyjson_obj_str(const Dataset& ds) {
   return out;
 }
 
+arangodb::velocypack::Buffer<uint8_t> build_vpack_obj(const Dataset& ds) {
+  namespace vpack = arangodb::velocypack;
+  vpack::Buffer<uint8_t> buf;
+  vpack::Builder b(buf);
+  b.openObject();
+  for (size_t i = 0; i < ds.count; ++i) {
+    if ((i & 1) == 0) {
+      b.add(ds.keys[i], vpack::Value(static_cast<int64_t>(i * 17)));
+    } else {
+      b.add(ds.keys[i], vpack::Value(ds.str_vals[i]));
+    }
+  }
+  b.close();
+  return buf;
+}
+
 } // namespace
 
 int main() {
@@ -188,7 +219,9 @@ int main() {
   size_t c_obj64_len = 0;
   std::vector<unsigned char> c_obj64 = build_lite3c_obj(ds64, c_obj64_len);
   std::vector<uint8_t> flex_obj64 = build_flexbuffers_obj(ds64);
+  auto vpack_obj64 = build_vpack_obj(ds64);
   std::string json_obj64 = build_yyjson_obj_str(ds64);
+  simdjson::padded_string padded_json64(json_obj64);
 
   // Pre-build buffers for 1000-key mixed object
   lite3cpp::Buffer cpp_obj1000 = build_lite3cpp_obj(ds1000);
@@ -196,7 +229,9 @@ int main() {
   std::vector<unsigned char> c_obj1000 =
       build_lite3c_obj(ds1000, c_obj1000_len);
   std::vector<uint8_t> flex_obj1000 = build_flexbuffers_obj(ds1000);
+  auto vpack_obj1000 = build_vpack_obj(ds1000);
   std::string json_obj1000 = build_yyjson_obj_str(ds1000);
+  simdjson::padded_string padded_json1000(json_obj1000);
 
   // -------------------------------------------------------------------------
   // 1. Wire / Buffer Size Comparison
@@ -215,6 +250,9 @@ int main() {
   std::cout << std::left << std::setw(28) << "FlexBuffers" << std::right
             << std::setw(18) << flex_obj64.size() << std::setw(18)
             << flex_obj1000.size() << "\n";
+  std::cout << std::left << std::setw(28) << "VelocyPack" << std::right
+            << std::setw(18) << vpack_obj64.size() << std::setw(18)
+            << vpack_obj1000.size() << "\n";
   std::cout << std::left << std::setw(28) << "JSON (yyjson compact)"
             << std::right << std::setw(18) << json_obj64.size()
             << std::setw(18) << json_obj1000.size() << "\n";
@@ -229,6 +267,16 @@ int main() {
     const lite3_key_data target_ck = ds64.c_hkeys[target_idx];
 
     std::vector<BenchResult> res;
+    res.push_back(run_bench("lite3-cpp (BufferView)", 200000, TRIALS, [&](size_t) {
+      lite3cpp::BufferView view(cpp_obj64.data(), cpp_obj64.size());
+      auto v = view.try_get_i64(0, target_key);
+      do_not_optimize(v);
+    }));
+    res.push_back(run_bench("lite3-cpp (BufferView+hk)", 200000, TRIALS, [&](size_t) {
+      lite3cpp::BufferView view(cpp_obj64.data(), cpp_obj64.size());
+      auto v = view.try_get_i64(0, target_hk);
+      do_not_optimize(v);
+    }));
     res.push_back(run_bench("lite3-cpp (from_view)", 200000, TRIALS, [&](size_t) {
       auto view = lite3cpp::Buffer::from_view(cpp_obj64.data(), cpp_obj64.size());
       auto v = view.try_get_i64(0, target_key);
@@ -255,6 +303,17 @@ int main() {
     res.push_back(run_bench("FlexBuffers (GetRoot)", 200000, TRIALS, [&](size_t) {
       auto root = flexbuffers::GetRoot(flex_obj64.data(), flex_obj64.size()).AsMap();
       int64_t v = root[target_key.c_str()].AsInt64();
+      do_not_optimize(v);
+    }));
+    res.push_back(run_bench("VelocyPack (Slice)", 200000, TRIALS, [&](size_t) {
+      arangodb::velocypack::Slice s(vpack_obj64.data());
+      int64_t v = s.get(target_key).getInt();
+      do_not_optimize(v);
+    }));
+    simdjson::ondemand::parser od_parser;
+    res.push_back(run_bench("simdjson (On-Demand)", 20000, TRIALS, [&](size_t) {
+      auto doc = od_parser.iterate(padded_json64);
+      int64_t v = doc[target_key].get_int64().value();
       do_not_optimize(v);
     }));
     res.push_back(run_bench("yyjson (parse + lookup)", 20000, TRIALS, [&](size_t) {
@@ -309,6 +368,19 @@ int main() {
       int64_t v = flex_map64[ds64.keys[idx].c_str()].AsInt64();
       do_not_optimize(v);
     }));
+    arangodb::velocypack::Slice vp_slice64(vpack_obj64.data());
+    res.push_back(run_bench("VelocyPack (Slice)", 200000, TRIALS, [&](size_t i) {
+      size_t idx = (i * 2) & 63;
+      int64_t v = vp_slice64.get(ds64.keys[idx]).getInt();
+      do_not_optimize(v);
+    }));
+    simdjson::dom::parser sj_dom64;
+    auto sj_root64 = sj_dom64.parse(padded_json64).get_object().value();
+    res.push_back(run_bench("simdjson (DOM scan)", 100000, TRIALS, [&](size_t i) {
+      size_t idx = (i * 2) & 63;
+      int64_t v = sj_root64[ds64.keys[idx]].get_int64().value();
+      do_not_optimize(v);
+    }));
     res.push_back(run_bench("yyjson (DOM linear scan)", 100000, TRIALS, [&](size_t i) {
       size_t idx = (i * 2) & 63;
       yyjson_val* val = yyjson_obj_getn(yy_root64, ds64.keys[idx].data(),
@@ -361,6 +433,19 @@ int main() {
     res.push_back(run_bench("FlexBuffers", 100000, TRIALS, [&](size_t i) {
       size_t idx = ((i * 37) % 500) * 2;
       int64_t v = flex_map1000[ds1000.keys[idx].c_str()].AsInt64();
+      do_not_optimize(v);
+    }));
+    arangodb::velocypack::Slice vp_slice1000(vpack_obj1000.data());
+    res.push_back(run_bench("VelocyPack (Slice)", 100000, TRIALS, [&](size_t i) {
+      size_t idx = ((i * 37) % 500) * 2;
+      int64_t v = vp_slice1000.get(ds1000.keys[idx]).getInt();
+      do_not_optimize(v);
+    }));
+    simdjson::dom::parser sj_dom1000;
+    auto sj_root1000 = sj_dom1000.parse(padded_json1000).get_object().value();
+    res.push_back(run_bench("simdjson (DOM scan)", 10000, TRIALS, [&](size_t i) {
+      size_t idx = ((i * 37) % 500) * 2;
+      int64_t v = sj_root1000[ds1000.keys[idx]].get_int64().value();
       do_not_optimize(v);
     }));
     res.push_back(run_bench("yyjson (DOM linear scan)", 10000, TRIALS, [&](size_t i) {
@@ -427,6 +512,23 @@ int main() {
       });
       flex_rebuild_fbb.Finish();
       do_not_optimize(flex_rebuild_fbb.GetBuffer().data());
+    }));
+    arangodb::velocypack::Buffer<uint8_t> vp_rebuild_buf;
+    res.push_back(run_bench("VelocyPack (rebuild)", 5000, TRIALS, [&](size_t i) {
+      namespace vpack = arangodb::velocypack;
+      vp_rebuild_buf.clear();
+      vpack::Builder b(vp_rebuild_buf);
+      b.openObject();
+      for (auto it : vpack::ObjectIterator(vpack::Slice(vpack_obj64.data()))) {
+        auto k = it.key.stringView();
+        if (k == target_key) {
+          b.add(k, vpack::Value(static_cast<int64_t>(i)));
+        } else {
+          b.add(k, it.value);
+        }
+      }
+      b.close();
+      do_not_optimize(vp_rebuild_buf.data());
     }));
     res.push_back(run_bench("yyjson (parse+mut+write)", 5000, TRIALS, [&](size_t i) {
       yyjson_doc* doc = yyjson_read(json_obj64.data(), json_obj64.size(), 0);
@@ -496,6 +598,22 @@ int main() {
       flex_scratch.Finish();
       do_not_optimize(flex_scratch.GetBuffer().data());
     }));
+    arangodb::velocypack::Buffer<uint8_t> vp_scratch;
+    res.push_back(run_bench("VelocyPack (build 64)", 5000, TRIALS, [&](size_t) {
+      namespace vpack = arangodb::velocypack;
+      vp_scratch.clear();
+      vpack::Builder b(vp_scratch);
+      b.openObject();
+      for (size_t k = 0; k < ds64.count; ++k) {
+        if ((k & 1) == 0) {
+          b.add(ds64.keys[k], vpack::Value(static_cast<int64_t>(k * 17)));
+        } else {
+          b.add(ds64.keys[k], vpack::Value(ds64.str_vals[k]));
+        }
+      }
+      b.close();
+      do_not_optimize(vp_scratch.data());
+    }));
     res.push_back(run_bench("yyjson (build+write 64)", 5000, TRIALS, [&](size_t) {
       yyjson_mut_doc* doc = yyjson_mut_doc_new(nullptr);
       yyjson_mut_val* root = yyjson_mut_obj(doc);
@@ -539,6 +657,10 @@ int main() {
           flexbuffers::GetRoot(flex_obj64.data(), flex_obj64.size()).ToString();
       do_not_optimize(s.data());
     }));
+    res_enc.push_back(run_bench("VelocyPack (toJson)", 5000, TRIALS, [&](size_t) {
+      std::string s = arangodb::velocypack::Slice(vpack_obj64.data()).toJson();
+      do_not_optimize(s.data());
+    }));
     yyjson_doc* yy_doc64 = yyjson_read(json_obj64.data(), json_obj64.size(), 0);
     res_enc.push_back(run_bench("yyjson (yyjson_write)", 5000, TRIALS, [&](size_t) {
       size_t out_len = 0;
@@ -560,6 +682,15 @@ int main() {
       int rc = lite3_json_dec(c_dec_buf.data(), &out_len, c_dec_buf.size(),
                               json_obj64.data(), json_obj64.size());
       do_not_optimize(rc);
+    }));
+    res_dec.push_back(run_bench("VelocyPack (fromJson)", 5000, TRIALS, [&](size_t) {
+      auto b = arangodb::velocypack::Parser::fromJson(json_obj64);
+      do_not_optimize(b->data());
+    }));
+    simdjson::dom::parser sj_dec_parser;
+    res_dec.push_back(run_bench("simdjson (DOM parse)", 10000, TRIALS, [&](size_t) {
+      auto doc = sj_dec_parser.parse(padded_json64);
+      do_not_optimize(doc);
     }));
     res_dec.push_back(run_bench("yyjson (yyjson_read)", 10000, TRIALS, [&](size_t) {
       yyjson_doc* doc = yyjson_read(json_obj64.data(), json_obj64.size(), 0);
@@ -610,6 +741,19 @@ int main() {
       auto s = flex_map64[ds64.keys[idx].c_str()].AsString();
       do_not_optimize(s);
     }));
+    arangodb::velocypack::Slice vp_slice64(vpack_obj64.data());
+    res.push_back(run_bench("VelocyPack (Slice str)", 200000, TRIALS, [&](size_t i) {
+      size_t idx = ((i * 2) & 63) | 1;
+      auto sv = vp_slice64.get(ds64.keys[idx]).stringView();
+      do_not_optimize(sv);
+    }));
+    simdjson::dom::parser sj_dom64;
+    auto sj_root64 = sj_dom64.parse(padded_json64).get_object().value();
+    res.push_back(run_bench("simdjson (DOM str)", 100000, TRIALS, [&](size_t i) {
+      size_t idx = ((i * 2) & 63) | 1;
+      auto sv = sj_root64[ds64.keys[idx]].get_string().value();
+      do_not_optimize(sv);
+    }));
     res.push_back(run_bench("yyjson (DOM str scan)", 100000, TRIALS, [&](size_t i) {
       size_t idx = ((i * 2) & 63) | 1;
       yyjson_val* val = yyjson_obj_getn(yy_root64, ds64.keys[idx].data(),
@@ -658,6 +802,11 @@ int main() {
       auto r = flex_map64[miss_key.c_str()];
       bool ok = !r.IsNull();
       do_not_optimize(ok);
+    }));
+    arangodb::velocypack::Slice vp_slice64(vpack_obj64.data());
+    res.push_back(run_bench("VelocyPack (miss)", 200000, TRIALS, [&](size_t) {
+      bool none = vp_slice64.get(miss_key).isNone();
+      do_not_optimize(none);
     }));
     res.push_back(run_bench("yyjson (DOM miss)", 100000, TRIALS, [&](size_t) {
       yyjson_val* val = yyjson_obj_getn(yy_root64, miss_key.data(), miss_key.size());
@@ -722,6 +871,10 @@ int main() {
     auto flex_nest_root = flexbuffers::GetRoot(flex_nest.data(), flex_nest.size()).AsMap();
 
     std::string nest_json = lite3cpp::lite3_json::to_json_string(cpp_nest, 0);
+    auto vp_nest = arangodb::velocypack::Parser::fromJson(nest_json);
+    arangodb::velocypack::Slice vp_nest_root(vp_nest->data());
+    simdjson::padded_string padded_nest_json(nest_json);
+    simdjson::ondemand::parser sj_nest_od;
     yyjson_doc* yy_nest = yyjson_read(nest_json.data(), nest_json.size(), 0);
     yyjson_val* yy_nest_root = yyjson_doc_get_root(yy_nest);
 
@@ -744,6 +897,15 @@ int main() {
     }));
     res.push_back(run_bench("FlexBuffers (4-hop)", 200000, TRIALS, [&](size_t) {
       int64_t v = flex_nest_root["level1"].AsMap()["level2"].AsMap()["level3"].AsMap()["target"].AsInt64();
+      do_not_optimize(v);
+    }));
+    res.push_back(run_bench("VelocyPack (4-hop)", 200000, TRIALS, [&](size_t) {
+      int64_t v = vp_nest_root.get("level1").get("level2").get("level3").get("target").getInt();
+      do_not_optimize(v);
+    }));
+    res.push_back(run_bench("simdjson (On-Demand 4-hop)", 20000, TRIALS, [&](size_t) {
+      auto doc = sj_nest_od.iterate(padded_nest_json);
+      int64_t v = doc["level1"]["level2"]["level3"]["target"].get_int64().value();
       do_not_optimize(v);
     }));
     res.push_back(run_bench("yyjson (DOM 4-hop)", 200000, TRIALS, [&](size_t) {
@@ -796,6 +958,18 @@ int main() {
       flex_arr_fbb.Finish();
       do_not_optimize(flex_arr_fbb.GetBuffer().data());
     }));
+    arangodb::velocypack::Buffer<uint8_t> vp_arr_buf;
+    res_build.push_back(run_bench("VelocyPack (arr 1000)", 1000, TRIALS, [&](size_t) {
+      namespace vpack = arangodb::velocypack;
+      vp_arr_buf.clear();
+      vpack::Builder b(vp_arr_buf);
+      b.openArray();
+      for (size_t k = 0; k < ARR_N; ++k) {
+        b.add(vpack::Value(static_cast<int64_t>(k * 3)));
+      }
+      b.close();
+      do_not_optimize(vp_arr_buf.data());
+    }));
     res_build.push_back(run_bench("yyjson (arr build+write)", 1000, TRIALS, [&](size_t) {
       yyjson_mut_doc* doc = yyjson_mut_doc_new(nullptr);
       yyjson_mut_val* root = yyjson_mut_arr(doc);
@@ -836,6 +1010,12 @@ int main() {
       int64_t v = flex_arr_vec[idx].AsInt64();
       do_not_optimize(v);
     }));
+    arangodb::velocypack::Slice vp_arr_slice(vp_arr_buf.data());
+    res_get.push_back(run_bench("VelocyPack (Slice::at)", 200000, TRIALS, [&](size_t i) {
+      size_t idx = (i * 37) % ARR_N;
+      int64_t v = vp_arr_slice.at(idx).getInt();
+      do_not_optimize(v);
+    }));
     res_get.push_back(run_bench("yyjson (yyjson_arr_get)", 20000, TRIALS, [&](size_t i) {
       size_t idx = (i * 37) % ARR_N;
       int64_t v = yyjson_get_sint(yyjson_arr_get(yy_arr_root, idx));
@@ -869,6 +1049,13 @@ int main() {
       int64_t sum = 0;
       for (size_t k = 0; k < flex_arr_vec.size(); ++k) {
         sum += flex_arr_vec[k].AsInt64();
+      }
+      do_not_optimize(sum);
+    }));
+    res_iter.push_back(run_bench("VelocyPack (ArrayIter)", 20000, TRIALS, [&](size_t) {
+      int64_t sum = 0;
+      for (auto s : arangodb::velocypack::ArrayIterator(vp_arr_slice)) {
+        sum += s.getInt();
       }
       do_not_optimize(sum);
     }));
@@ -945,6 +1132,19 @@ int main() {
       }
       do_not_optimize(acc);
     }));
+    res.push_back(run_bench("VelocyPack (ObjectIter)", 20000, TRIALS, [&](size_t) {
+      int64_t acc = 0;
+      for (auto it : arangodb::velocypack::ObjectIterator(
+               arangodb::velocypack::Slice(vpack_obj64.data()))) {
+        acc += static_cast<int64_t>(it.key.stringView().size());
+        if (it.value.isInteger()) {
+          acc += it.value.getInt();
+        } else if (it.value.isString()) {
+          acc += static_cast<int64_t>(it.value.stringView().size());
+        }
+      }
+      do_not_optimize(acc);
+    }));
     res.push_back(run_bench("yyjson (obj_foreach)", 50000, TRIALS, [&](size_t) {
       int64_t acc = 0;
       size_t idx, max;
@@ -1007,10 +1207,21 @@ int main() {
       flex_blob_fbb.Finish();
       do_not_optimize(flex_blob_fbb.GetBuffer().data());
     }));
+    arangodb::velocypack::Buffer<uint8_t> vp_blob_buf;
+    res_w.push_back(run_bench("VelocyPack (Binary 64KiB)", 5000, TRIALS, [&](size_t) {
+      namespace vpack = arangodb::velocypack;
+      vp_blob_buf.clear();
+      vpack::Builder b(vp_blob_buf);
+      b.openObject();
+      b.add("blob", vpack::ValuePair(blob.data(), blob.size(), vpack::ValueType::Binary));
+      b.close();
+      do_not_optimize(vp_blob_buf.data());
+    }));
     print_table("13a. Binary Blob Write (64 KiB)", res_w);
 
     auto flex_blob_buf = flex_blob_fbb.GetBuffer();
     auto flex_blob_map = flexbuffers::GetRoot(flex_blob_buf.data(), flex_blob_buf.size()).AsMap();
+    arangodb::velocypack::Slice vp_blob_slice(vp_blob_buf.data());
     using namespace lite3cpp::literals;
 
     std::vector<BenchResult> res_r;
@@ -1027,6 +1238,12 @@ int main() {
     res_r.push_back(run_bench("FlexBuffers (AsBlob)", 200000, TRIALS, [&](size_t) {
       auto b = flex_blob_map["blob"].AsBlob();
       do_not_optimize(b);
+    }));
+    res_r.push_back(run_bench("VelocyPack (getBinary)", 200000, TRIALS, [&](size_t) {
+      arangodb::velocypack::ValueLength blen = 0;
+      const uint8_t* p = vp_blob_slice.get("blob").getBinary(blen);
+      do_not_optimize(p);
+      do_not_optimize(blen);
     }));
     print_table("13b. Binary Blob Zero-Copy Read (64 KiB)", res_r);
   }

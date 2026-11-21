@@ -86,6 +86,35 @@ if(LITE3CPP_BUILD_COMPARE_BENCHMARK)
         FetchContent_Populate(flatbuffers_hdrs)
     endif()
 
+    FetchContent_Declare(
+        simdjson_src
+        GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+        GIT_TAG v4.6.9
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_GetProperties(simdjson_src)
+    if(NOT simdjson_src_POPULATED)
+        FetchContent_Populate(simdjson_src)
+    endif()
+
+    FetchContent_Declare(
+        velocypack_dep
+        GIT_REPOSITORY https://github.com/arangodb/velocypack.git
+        GIT_TAG main
+        GIT_SHALLOW TRUE
+    )
+    set(BuildVelocyPackExamples OFF CACHE BOOL "" FORCE)
+    set(BuildTests OFF CACHE BOOL "" FORCE)
+    set(BuildTools OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(velocypack_dep)
+
+    add_library(simdjson_ref STATIC
+        ${simdjson_src_SOURCE_DIR}/singleheader/simdjson.cpp
+    )
+    target_include_directories(simdjson_ref PUBLIC
+        ${simdjson_src_SOURCE_DIR}/singleheader
+    )
+
     file(GLOB LITE3_C_B64_SRCS "${lite3_c_SOURCE_DIR}/lib/nibble_base64/*.c")
     add_library(lite3_c_ref STATIC
         ${lite3_c_SOURCE_DIR}/src/lite3.c
@@ -107,7 +136,12 @@ if(LITE3CPP_BUILD_COMPARE_BENCHMARK)
         benchmark/compare_benchmark.cpp
         ${flatbuffers_hdrs_SOURCE_DIR}/src/util.cpp
     )
-    target_link_libraries(lite3-cpp_compare_benchmark PRIVATE lite3-cpp lite3_c_ref)
+    target_link_libraries(lite3-cpp_compare_benchmark PRIVATE
+        lite3-cpp
+        lite3_c_ref
+        simdjson_ref
+        velocypack
+    )
     target_include_directories(lite3-cpp_compare_benchmark PRIVATE
         ${flatbuffers_hdrs_SOURCE_DIR}/include
     )
