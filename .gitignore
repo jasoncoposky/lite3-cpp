@@ -43,6 +43,7 @@
 # Build directories
 build/
 build-test/
+build-compare/
 _deps/
 
 # Visual Studio files
