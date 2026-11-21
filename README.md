@@ -24,26 +24,13 @@ cmake -DLITE3CPP_DISABLE_OBSERVABILITY=OFF ..
 ```
 
 ### Measured Performance (`Release -O3`, `LITE3CPP_DISABLE_OBSERVABILITY=ON`)
-7-trial micro-benchmarks comparing the original baseline (`PRE`) against current `HEAD`:
-
-| Benchmark Case | Baseline (`PRE`) | Current (`Release -O3`) | Throughput / Allocs | Speedup |
-| :--- | :---: | :---: | :---: | :---: |
-| **`L1.1_get`** (64-key B-Tree lookup) | 105.01 ns | **38.96 ns** | 25.67 Mops/s | **2.70x** |
-| **`L1.1_set`** (in-place update) | 118.74 ns | **53.43 ns** | 18.72 Mops/s | **2.22x** |
-| **`L1.2_wrap_512B`** (`Buffer::from_view`) | 311.40 ns | **85.39 ns** | 11.71 Mops/s (`0` allocs) | **3.65x** |
-| **`L1.2_wrap_1MiB`** (`Buffer::from_view`) | 60,184.07 ns | **85.47 ns** | 11.72 Mops/s (`0` allocs) | **704x** |
-| **`L1.2_release_4KiB`** (`O(1)` `release()`) | 4,453.44 ns | **9.49 ns** | 105.68 Mops/s | **469x** |
-| **`L1.4_optional_lookup_mix`** (`_hk` `try_get_*`) | 162.33 ns | **46.19 ns** | 24.68 Mops/s | **3.51x** |
-| **`L1.4_bytes_write_64KiB`** (`set_bytes_uninitialized`) | 4,650.56 ns | **1,449.37 ns** | 0.69 Mops/s (`0` allocs) | **3.21x** |
-| **`L1.4_json_array_1000`** (`O(N)` `to_json_string`) | 564.49 µs | **82.98 µs** | 12,068 ops/s | **6.80x** |
-
-### Competitive Comparison (`Release -O3`, `LITE3CPP_DISABLE_OBSERVABILITY=ON`)
 7-trial medians from `benchmark/compare_benchmark.cpp` comparing `lite3-cpp` against upstream C `lite3` (`v1.1.0`), `FlexBuffers` (`v25.2.10`), ArangoDB `VelocyPack`, `simdjson` (`v4.6.9`), and `yyjson` (lower latency is better):
 
 | Workload | `lite3-cpp` *(prehash/`_hk`)* | `lite3 (C)` *(prehash)* | `FlexBuffers` | `VelocyPack` | `simdjson` | `yyjson` |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | **Cold wrap + 1 lookup (64 keys)** | 28.83 ns *(**19.39 ns**)* | 38.28 ns *(29.13 ns)* | 46.27 ns | 95.84 ns | 729.30 ns *(OD)* | 1,457.60 ns |
 | **Hot i64 lookup (64 keys)** | 33.90 ns *(**23.80 ns**)* | 38.67 ns *(30.95 ns)* | 39.51 ns | 103.42 ns | 159.29 ns *(DOM)* | 97.97 ns |
+| **Hot i64 lookup (1,000 keys)** | 87.18 ns *(65.89 ns)* | 80.24 ns *(**45.35 ns**)* | 133.53 ns | 274.17 ns | 2,395.92 ns *(DOM)* | 2,081.75 ns |
 | **Hot string lookup (64 keys)** | 39.15 ns *(**28.56 ns**)* | 42.22 ns *(31.81 ns)* | 48.20 ns | 105.73 ns | 168.87 ns *(DOM)* | 131.01 ns |
 | **Miss lookup (64 keys)** | 37.81 ns *(**17.97 ns**)* | 41.26 ns *(24.39 ns)* | 38.20 ns | 157.43 ns | — | 139.42 ns |
 | **Read-Modify-Write (64 keys -> wire)** | 40.76 ns *(**33.40 ns**)* | 44.13 ns *(35.15 ns)* | 16,213.59 ns | 5,633.63 ns | — | 3,098.54 ns |
@@ -51,6 +38,7 @@ cmake -DLITE3CPP_DISABLE_OBSERVABILITY=OFF ..
 | **JSON Encode (64 keys -> text)** | 2,790.60 ns | 3,849.39 ns | 13,745.36 ns | 11,209.45 ns | — | **856.89 ns** |
 | **JSON Decode (64 keys -> bin/DOM)** | 6,001.86 ns | 5,302.65 ns | — | 7,771.55 ns | **1,204.57 ns** | 1,305.35 ns |
 | **Array build (1,000 int64s)** | 30,994.84 ns | 36,150.67 ns | 13,286.79 ns | 21,512.02 ns | — | **10,016.49 ns** |
+| **Array random access (1,000 int64s)** | 58.27 ns | 55.89 ns | **2.48 ns** | 22.39 ns | — | 2.94 ns |
 | **Array iteration (1,000 int64s)** | 12,517.67 ns | 13,773.00 ns | 1,499.67 ns | 7,068.37 ns | — | **1,200.64 ns** |
 | **Object iteration (64 keys)** | 1,239.11 ns | 1,729.58 ns | 339.55 ns | 1,748.67 ns | — | **140.09 ns** |
 | **64 KiB Blob write (`uninit+copy`)** | **2,615.93 ns** | 3,046.81 ns | 3,288.86 ns | 4,276.23 ns | — | — |
