@@ -212,6 +212,8 @@ static void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs,
     from_yyjson_val(val, buffer, new_ofs);
     break;
   }
+  default:
+    break;
   }
 }
 
@@ -284,6 +286,8 @@ static void from_yyjson_val(yyjson_val *val, Buffer &buffer, size_t ofs) {
     }
     break;
   }
+  default:
+    break;
   }
 }
 

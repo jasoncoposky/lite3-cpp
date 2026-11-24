@@ -4,6 +4,9 @@ project(lite3-cpp)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(LITE3CPP_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
 option(LITE3CPP_BUILD_TESTS "Build lite3-cpp tests, examples, and benchmarks" OFF)
 option(LITE3CPP_BUILD_COMPARE_BENCHMARK "Build head-to-head comparison benchmark (lite3 C, FlexBuffers, yyjson)" OFF)
@@ -32,6 +35,14 @@ target_include_directories(lite3-cpp PUBLIC
 
 if(LITE3CPP_DISABLE_OBSERVABILITY)
     target_compile_definitions(lite3-cpp PUBLIC LITE3CPP_DISABLE_OBSERVABILITY)
+endif()
+
+if(NOT MSVC)
+    target_compile_options(lite3-cpp PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra>)
+    if(LITE3CPP_ENABLE_SANITIZERS)
+        target_compile_options(lite3-cpp PUBLIC -fsanitize=address,undefined -fno-omit-frame-pointer)
+        target_link_options(lite3-cpp PUBLIC -fsanitize=address,undefined)
+    endif()
 endif()
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR OR LITE3CPP_BUILD_TESTS)
