@@ -1,0 +1,93 @@
+name: CI (Build, Test, Sanitizers, Static Analysis)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  build-test:
+    name: Release Build & Test (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout lite3-cpp
+        uses: actions/checkout@v4
+        with:
+          path: lib/lite3-cpp
+
+      - name: Checkout yyjson
+        run: git clone --depth 1 https://github.com/ibireme/yyjson.git yyjson
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build
+
+      - name: Configure & Build
+        run: |
+          cmake -S lib/lite3-cpp -B lib/lite3-cpp/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLITE3CPP_BUILD_TESTS=ON
+          cmake --build lib/lite3-cpp/build -j$(nproc)
+
+      - name: Run CTest
+        run: ctest --test-dir lib/lite3-cpp/build --output-on-failure
+
+  sanitizers:
+    name: ASan + UBSan (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout lite3-cpp
+        uses: actions/checkout@v4
+        with:
+          path: lib/lite3-cpp
+
+      - name: Checkout yyjson
+        run: git clone --depth 1 https://github.com/ibireme/yyjson.git yyjson
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build
+
+      - name: Configure, Build & Test (ASan + UBSan)
+        env:
+          ASAN_OPTIONS: "detect_leaks=1:halt_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: |
+          cmake -S lib/lite3-cpp -B lib/lite3-cpp/build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLITE3CPP_BUILD_TESTS=ON \
+            -DLITE3CPP_ENABLE_SANITIZERS=ON
+          cmake --build lib/lite3-cpp/build-asan -j$(nproc)
+          ctest --test-dir lib/lite3-cpp/build-asan --output-on-failure
+
+  clang-tidy:
+    name: Static Analysis (clang-tidy)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout lite3-cpp
+        uses: actions/checkout@v4
+        with:
+          path: lib/lite3-cpp
+
+      - name: Checkout yyjson
+        run: git clone --depth 1 https://github.com/ibireme/yyjson.git yyjson
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build clang-tidy
+
+      - name: Configure & run clang-tidy
+        run: |
+          cmake -S lib/lite3-cpp -B lib/lite3-cpp/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          run-clang-tidy -p lib/lite3-cpp/build -j $(nproc) -quiet \
+            -extra-arg=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13 \
+            'lib/lite3-cpp/src/.*\.cpp$'
